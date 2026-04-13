@@ -41,11 +41,13 @@ We’re changing that.
 Partcl develops GPU-accelerated systems for physical design that run orders of magnitude faster than legacy tools. Our goal is simple: make iteration cheap enough that design space exploration becomes the default, not the exception.
 
 ## Background Papers
-[An Updated Assessment of Reinforcement Learning for Macro Placement](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=11300304)
+[1] [An Updated Assessment of Reinforcement Learning for Macro Placement](https://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=11300304)
 
-[Assessment of Reinforcement Learning for Macro Placement](https://vlsicad.ucsd.edu/Publications/Conferences/396/c396.pdf)
+[2] [Assessment of Reinforcement Learning for Macro Placement](https://vlsicad.ucsd.edu/Publications/Conferences/396/c396.pdf)
 
-[A graph placement methodology for fast chip design](https://www.nature.com/articles/s41586-021-03544-w.epdf?sharing_token=tYaxh2mR5EozfsSL0WHZLdRgN0jAjWel9jnR3ZoTv0PW0K0NmVrRsFPaMa9Y5We9O4Hqf_liatg-lvhiVcYpHL_YQpqkurA31sxqtmA-E1yNUWVMMVSBxWSp7ZFFIWawYQYnEXoBE4esRDSWqubhDFWUPyI5wK_5B_YIO-D_kS8%3D)
+[3] [Reevaluating Google's Reinforcement Learning for IC Macro Placement](https://cacm.acm.org/research/reevaluating-googles-reinforcement-learning-for-ic-macro-placement/)
+
+[4] [A graph placement methodology for fast chip design](https://www.nature.com/articles/s41586-021-03544-w.epdf?sharing_token=tYaxh2mR5EozfsSL0WHZLdRgN0jAjWel9jnR3ZoTv0PW0K0NmVrRsFPaMa9Y5We9O4Hqf_liatg-lvhiVcYpHL_YQpqkurA31sxqtmA-E1yNUWVMMVSBxWSp7ZFFIWawYQYnEXoBE4esRDSWqubhDFWUPyI5wK_5B_YIO-D_kS8%3D)
 
 ## 🏆 Prizes
 
@@ -83,7 +85,7 @@ Partcl develops GPU-accelerated systems for physical design that run orders of m
 - Hardcoding solutions for specific benchmarks (must be general algorithm)
 - Using external/proprietary placement tools (must be open-source submission)
 - Exceeding runtime limits (1 hour per benchmark hard timeout)
-- Overlaps in resulting placement
+- Overlaps in resulting placement (strictly zero overlap between hard macros — no tolerance. Participants should add small gaps in their legalization to avoid float-precision edge cases.)
 
 ## Evaluation Details
 
@@ -223,20 +225,24 @@ Submissions are ranked by **average proxy cost** across all 17 IBM benchmarks (l
 | Rank | Team | Avg Proxy Cost | Best | Worst | Overlaps | Runtime | Verified |
 |------|------|---------------|------|-------|----------|---------|----------|
 | 1 | "MTK" (DreamPlace++) | **1.3998** | — | — | 0 | 25s/bench | |
-| 2 | "UT Austin" - AS (DREAMPlace Analytical) | **1.4076** | — | — | 0 | 17s/bench | |
-| 3 | "BakaBobo" (Spread+Refine) | **1.4403** | — | — | 0 | 212s/bench | |
-| 4 | "Convex Optimization" (UWaterloo Student) | **1.4556** | — | — | 0 | 16s total | |
-| 5 | "another Waterloo kid" (Batched Nesterov GP) | **1.4568** | — | — | 0 | 118s/bench | |
+| 2 | "Varun's Parallel Worlds" (GRPlace) | **1.4044** | — | — | 0 | 125s/bench | |
+| 3 | "UT Austin" - AS (DREAMPlace Analytical) | **1.4076** | — | — | 0 | 17s/bench | |
+| 4 | "ByteDancer" (Incremental CD) | **1.4156** | — | — | 0 | 42min/bench | |
+| 5 | "BakaBobo" (Spread+Refine) | **1.4403** | — | — | 0 | 212s/bench | |
+| 6 | "Convex Optimization" (UWaterloo Student) | **1.4556** | — | — | 0 | 16s total | |
+| 7 | "another Waterloo kid" (Batched Nesterov GP) | **1.4568** | — | — | 0 | 118s/bench | |
 | — | RePlAce (baseline) | **1.4578** | 0.9976 | 1.8370 | 0 | — | :white_check_mark: |
-| 6 | "UTAUSTIN-CT" (PLC-Exact Congestion-Aware SA) | **1.5062** | — | — | 0 | 35s/bench | |
-| 7 | "oracleX" (Oracle) | **1.5130** | — | — | 0 | 3min/bench | |
-| 8 | "CA" (congestion_aware) | **1.5238** | — | — | 0 | 13s/bench | |
-| 9 | Will Seed (Partcl) | **1.5338** | 1.1625 | 1.7965 | 0 | 35s total | :white_check_mark: |
-| 10 | "Cezar" (CRISP) | **1.5806** | — | — | 0 | 10min/bench | |
-| 11 | "UT Austin" - RH (DREAMPlace) | **1.6037** | — | — | 0 | 4.5s/bench | |
-| 12 | "UT Austin" - CT (PROXYCost) | **1.8706** | — | — | 0 | 187s/bench | |
+| 8 | "UTAUSTIN-CT" (PLC-Exact Congestion-Aware SA) | **1.5062** | — | — | 0 | 35s/bench | |
+| 9 | "oracleX" (Oracle) | **1.5130** | — | — | 0 | 3min/bench | |
+| 10 | "CA" (congestion_aware) | **1.5238** | — | — | 0 | 13s/bench | |
+| 11 | Will Seed (Partcl) | **1.5338** | 1.1625 | 1.7965 | 0 | 35s total | :white_check_mark: |
+| 12 | "Cezar" (CRISP) | **1.5806** | — | — | 0 | 10min/bench | |
+| 13 | "UT Austin" - RH (DREAMPlace) | **1.6037** | — | — | 0 | 4.5s/bench | |
+| 14 | "UT Austin" - CT (PROXYCost) | **1.8706** | — | — | 0 | 187s/bench | |
 | — | SA (baseline) | 2.1251 | 1.3166 | 3.6726 | 0 | — | :white_check_mark: |
 | — | Greedy Row (demo) | 2.2109 | 1.6728 | 2.7696 | 0 | 0.3s total | :white_check_mark: |
+| — | "Binghamton" (feng shui) | pending | — | — | — | — | |
+| — | "MacroBio" (Two-Opt Swap) | pending | — | — | — | — | |
 
 *Submit your results via the [Submission Link](https://forms.gle/YDRtYV5Vq68SZgKW9)!*
 
