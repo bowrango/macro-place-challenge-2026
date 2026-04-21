@@ -27,8 +27,10 @@ def load_benchmark(
         Tuple of (Benchmark, PlacementCost) - Benchmark contains PyTorch tensors,
         PlacementCost object is needed for cost computation
     """
-    # Initialize PlacementCost (parses netlist)
-    plc = PlacementCost(netlist_file)
+    # Initialize PlacementCost (parses netlist).
+    # Force forward slashes — the submodule splits on '/' to derive block_name,
+    # which breaks on Windows paths with backslashes.
+    plc = PlacementCost(netlist_file.replace("\\", "/"))
 
     # Optionally restore placement from .plc file
     if plc_file:
