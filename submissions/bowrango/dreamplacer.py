@@ -30,16 +30,22 @@ from placer import _load_plc, _extract_hard_edges, spiralsearch, _progress
 # Differentiable wirelength: log-sum-exp HPWL over nets
 # ---------------------------------------------------------------------------
 
-def _build_net_data(plc, n_hard):
+def _build_net_data(plc, n_hard, n_soft=0):
     """Extract nets as padded tensors for batched LSE wirelength.
 
+    Node indices: hard macros [0, n_hard), soft macros [n_hard, n_hard+n_soft).
+    If n_soft=0, only hard-macro nets are extracted.
+
     Returns:
-        nets_padded: (M, max_deg) int64 — macro indices per net
+        nets_padded: (M, max_deg) int64 — node indices per net
         nets_mask: (M, max_deg) bool — valid entries
     """
     name_to_bidx = {}
     for bidx, idx in enumerate(plc.hard_macro_indices):
         name_to_bidx[plc.modules_w_pins[idx].get_name()] = bidx
+    if n_soft > 0:
+        for bidx, idx in enumerate(plc.soft_macro_indices):
+            name_to_bidx[plc.modules_w_pins[idx].get_name()] = n_hard + bidx
 
     nets = []
     for driver, sinks in plc.nets.items():
@@ -133,13 +139,14 @@ def smooth_density(pos, sizes, canvas_w, canvas_h, num_bins_x, num_bins_y):
 
 def global_place(pos_init, sizes, movable, canvas_w, canvas_h,
                  nets_padded, nets_mask,
-                 num_steps=300, base_lr=0.01,
-                 gamma=None, num_bins=None):
-    """Nesterov-accelerated gradient descent on LSE wirelength + density.
+                 num_steps=300, num_bins=None):
+    """Gradient descent on LSE wirelength + density with annealing.
 
-    Lambda (density weight) is ramped from small to large so that
-    wirelength dominates early (spreading), then density forces
-    push macros apart to reduce overlaps.
+    Key techniques from DREAMPlace:
+    1. Gamma annealing: LSE smoothing decreases over time (smooth → sharp)
+    2. Adaptive lambda: density weight set from WL/density gradient ratio
+    3. Degree-based preconditioning: highly-connected macros get smaller steps
+    4. Lipschitz-aware step size
     """
     n = pos_init.shape[0]
     device = pos_init.device
@@ -148,12 +155,10 @@ def global_place(pos_init, sizes, movable, canvas_w, canvas_h,
         return pos_init.clone()
 
     sizes_f = sizes.float().to(device)
+    nets_padded = nets_padded.to(device)
+    nets_mask = nets_mask.to(device)
     half_w = sizes_f[:, 0] / 2
     half_h = sizes_f[:, 1] / 2
-
-    # Auto-tune gamma based on canvas size
-    if gamma is None:
-        gamma = max(1.0, math.sqrt(canvas_w * canvas_h) / 50.0)
 
     # Auto-tune grid resolution
     if num_bins is None:
@@ -165,48 +170,79 @@ def global_place(pos_init, sizes, movable, canvas_w, canvas_h,
     movable_mask = movable.bool().to(device)
     fixed_pos = pos_init.clone().float().to(device)
 
+    # Gamma annealing: start smooth (large gamma), end sharp (small gamma)
+    canvas_diag = math.sqrt(canvas_w ** 2 + canvas_h ** 2)
+    gamma_start = canvas_diag / 10.0   # smooth
+    gamma_end = canvas_diag / 200.0    # sharp, closer to true HPWL
+
+    # Degree-based preconditioning: scale gradient inversely by connectivity
+    degree = torch.zeros(n, device=device)
+    if nets_padded is not None:
+        for i in range(nets_padded.shape[0]):
+            net = nets_padded[i][nets_mask[i]]
+            degree[net] += 1
+    degree = degree.clamp(min=1)
+    precond = (1.0 / degree).unsqueeze(-1)  # (N, 1) — inverse degree per macro
+
     # Nesterov state
     pos = pos_init.clone().float().to(device).requires_grad_(True)
     velocity = torch.zeros_like(pos)
-    momentum = 0.9
 
-    # Lambda schedule: ramp from lambda_0 to lambda_max
-    lambda_0 = 0.001
-    lambda_max = 5.0
-
-    # Compute initial wirelength for normalization
-    with torch.no_grad():
-        wl_0 = lse_wirelength(pos, nets_padded, nets_mask, gamma).item()
-    wl_norm = max(wl_0, 1.0)
+    # Adaptive lambda state
+    lam = 0.01
 
     for step in range(num_steps):
+        t = step / max(num_steps - 1, 1)
+
         # Enforce fixed macros
         with torch.no_grad():
             pos.data[~movable_mask] = fixed_pos[~movable_mask]
 
-        # Lambda ramp (log-linear)
-        t = step / max(num_steps - 1, 1)
-        lam = lambda_0 * (lambda_max / lambda_0) ** t
+        # Anneal gamma: log-linear from gamma_start to gamma_end
+        gamma = gamma_start * (gamma_end / gamma_start) ** t
 
-        # Forward
-        wl = lse_wirelength(pos, nets_padded, nets_mask, gamma) / wl_norm
+        # Momentum schedule: 0.5 → 0.9
+        momentum = 0.5 + 0.4 * t
+
+        # Forward: wirelength
+        wl = lse_wirelength(pos, nets_padded, nets_mask, gamma)
+
+        # Forward: density
         den = smooth_density(pos, sizes_f, canvas_w, canvas_h,
                               num_bins_x, num_bins_y)
-        loss = wl + lam * den
 
-        # Backward
-        loss.backward()
+        # Compute gradients separately to balance lambda
+        wl.backward(retain_graph=True)
+        wl_grad = pos.grad.clone()
+        pos.grad.zero_()
 
-        # Nesterov update
+        den.backward()
+        den_grad = pos.grad.clone()
+        pos.grad.zero_()
+
         with torch.no_grad():
-            grad = pos.grad.clone()
-            grad[~movable_mask] = 0  # freeze fixed macros
+            # Zero gradients for fixed macros
+            wl_grad[~movable_mask] = 0
+            den_grad[~movable_mask] = 0
 
-            # Adaptive learning rate based on gradient magnitude
-            grad_norm = grad.norm()
-            lr = base_lr * canvas_w / max(grad_norm.item(), 1e-6)
-            lr = min(lr, canvas_w * 0.1)  # cap at 10% of canvas
+            # Adaptive lambda: balance WL and density gradient magnitudes
+            wl_grad_norm = wl_grad[movable_mask].norm()
+            den_grad_norm = den_grad[movable_mask].norm()
+            if den_grad_norm > 1e-8:
+                # Target: lambda * den_grad ~ wl_grad, scaled by progress
+                target_ratio = 0.01 + 0.99 * t  # 0.01 early → 1.0 late
+                lam = target_ratio * wl_grad_norm / den_grad_norm
+                lam = min(lam, 100.0)  # cap
 
+            # Combined gradient with preconditioning
+            grad = (wl_grad + lam * den_grad) * precond
+
+            # Lipschitz-aware step size: lr ~ canvas_size / grad_magnitude
+            grad_norm = grad[movable_mask].norm()
+            lr = 0.01 * canvas_diag / max(grad_norm.item(), 1e-8)
+            lr = min(lr, canvas_diag * 0.05)
+
+            # Nesterov update
             velocity = momentum * velocity - lr * grad
             pos.data += velocity
 
@@ -214,8 +250,6 @@ def global_place(pos_init, sizes, movable, canvas_w, canvas_h,
             pos.data[:, 0].clamp_(half_w, canvas_w - half_w)
             pos.data[:, 1].clamp_(half_h, canvas_h - half_h)
             pos.data[~movable_mask] = fixed_pos[~movable_mask]
-
-        pos.grad.zero_()
 
         if (step + 1) % 50 == 0 or step == 0:
             _progress(step + 1, num_steps, "global")
@@ -225,62 +259,175 @@ def global_place(pos_init, sizes, movable, canvas_w, canvas_h,
 
 
 # ---------------------------------------------------------------------------
+# Soft macro optimization: gradient descent on wirelength + light density
+# ---------------------------------------------------------------------------
+
+def optimize_soft(hard_pos, soft_pos_init, hard_sizes, soft_sizes,
+                  canvas_w, canvas_h, nets_padded, nets_mask,
+                  num_steps=200, base_lr=0.01, gamma=None):
+    """Optimize soft macro positions with hard macros fixed.
+
+    Minimizes wirelength (LSE) + light density penalty.
+    No overlap constraints — soft macros may overlap each other.
+    Uses the same LSE wirelength over the combined hard+soft position tensor.
+    """
+    n_hard = hard_pos.shape[0]
+    n_soft = soft_pos_init.shape[0]
+
+    if nets_padded is None or n_soft == 0:
+        return soft_pos_init.clone()
+
+    device = soft_pos_init.device
+    hard_pos = hard_pos.to(device).float()
+    soft_sizes = soft_sizes.to(device)
+    nets_padded = nets_padded.to(device)
+    nets_mask = nets_mask.to(device)
+
+    # Only soft macros are optimized
+    soft_pos = soft_pos_init.clone().float().requires_grad_(True)
+
+    half_w = soft_sizes[:, 0].float() / 2
+    half_h = soft_sizes[:, 1].float() / 2
+
+    if gamma is None:
+        gamma = max(1.0, math.sqrt(canvas_w * canvas_h) / 50.0)
+
+    # Light density: fewer bins, weaker penalty
+    num_bins = max(8, min(32, int(math.sqrt(n_hard + n_soft))))
+
+    optimizer = torch.optim.Adam([soft_pos], lr=base_lr)
+
+    # Compute initial WL for normalization
+    with torch.no_grad():
+        combined = torch.cat([hard_pos.float(), soft_pos], dim=0)
+        wl_0 = lse_wirelength(combined, nets_padded, nets_mask, gamma).item()
+    wl_norm = max(wl_0, 1.0)
+
+    for step in range(num_steps):
+        optimizer.zero_grad()
+
+        combined = torch.cat([hard_pos.float(), soft_pos], dim=0)
+
+        # Wirelength over all nets (hard + soft)
+        wl = lse_wirelength(combined, nets_padded, nets_mask, gamma) / wl_norm
+
+        # Light density on soft macros only (they can overlap, so weak penalty)
+        den = smooth_density(soft_pos, soft_sizes.float(), canvas_w, canvas_h,
+                              num_bins, num_bins) * 0.1
+
+        loss = wl + den
+        loss.backward()
+        optimizer.step()
+
+        # Clamp to canvas
+        with torch.no_grad():
+            soft_pos.data[:, 0].clamp_(half_w, canvas_w - half_w)
+            soft_pos.data[:, 1].clamp_(half_h, canvas_h - half_h)
+
+        if (step + 1) % 50 == 0 or step == 0:
+            _progress(step + 1, num_steps, "softs")
+
+    _progress(num_steps, num_steps, "softs")
+    return soft_pos.detach()
+
+
+# ---------------------------------------------------------------------------
 # Main placer class
 # ---------------------------------------------------------------------------
 
 class SAPlacer:
-    """DREAMPlace-style analytical placer + spiral search legalization."""
+    """DREAMPlace-style 2-stage global placement with legalization loop.
 
-    def __init__(self, seed: int = 42, num_steps: int = 300):
+    Following the DREAMPlace flow:
+    1. Global placement (gradient descent on all macros)
+    2. Converge? → Legalize hard macros (spiral search)
+    3. Fix hard macros, re-optimize soft macros
+    4. Macros fixed? → if not, repeat from 1 with legalized positions
+    """
+
+    def __init__(self, seed: int = 42, num_steps: int = 300, num_rounds: int = 2,
+                 device: str = "auto"):
         self.seed = seed
         self.num_steps = num_steps
+        self.num_rounds = num_rounds
+        self.device = torch.device(
+            ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
+        )
 
     def place(self, benchmark: Benchmark) -> torch.Tensor:
         np.random.seed(self.seed)
         torch.manual_seed(self.seed)
 
         n_hard = benchmark.num_hard_macros
-        sizes = benchmark.macro_sizes[:n_hard]
+        n_soft = benchmark.num_soft_macros
+        hard_sizes = benchmark.macro_sizes[:n_hard]
+        soft_sizes = benchmark.macro_sizes[n_hard:n_hard+n_soft] if n_soft > 0 else None
         cw = float(benchmark.canvas_width)
         ch = float(benchmark.canvas_height)
         movable = benchmark.get_movable_mask()[:n_hard]
 
         plc = _load_plc(benchmark.name)
 
-        # Build net data for LSE wirelength
-        nets_padded, nets_mask = None, None
+        # Build net data
+        hard_nets, hard_nets_mask = None, None
+        all_nets, all_nets_mask = None, None
         if plc is not None:
-            nets_padded, nets_mask = _build_net_data(plc, n_hard)
+            hard_nets, hard_nets_mask = _build_net_data(plc, n_hard)
+            if n_soft > 0:
+                all_nets, all_nets_mask = _build_net_data(plc, n_hard, n_soft)
 
-        # Extract edges for spiral search legalization
+        # Edges for spiral search
         if plc is not None:
             edges, edge_weights = _extract_hard_edges(plc)
         else:
             edges = np.zeros((0, 2), dtype=np.int64)
             edge_weights = np.zeros(0, dtype=np.float64)
 
-        # Phase 1: Global analytical placement
-        pos_init = benchmark.macro_positions[:n_hard].clone()
-        pos_global = global_place(
-            pos_init, sizes, movable, cw, ch,
-            nets_padded, nets_mask,
-            num_steps=self.num_steps,
-        )
-
-        # Phase 2: Legalize with spiral search (resolve remaining overlaps)
-        sizes_np = sizes.numpy().astype(np.float64)
+        sizes_np = hard_sizes.numpy().astype(np.float64)
         half_w = sizes_np[:, 0] / 2
         half_h = sizes_np[:, 1] / 2
         movable_np = movable.numpy()
-        pos_np = pos_global.numpy().copy().astype(np.float64)
 
-        pos_legal = spiralsearch(
-            pos_np, movable_np, sizes_np, half_w, half_h, cw, ch, n_hard,
-            edges=edges, edge_weights=edge_weights,
-        )
+        # Start from benchmark positions
+        hard_pos = benchmark.macro_positions[:n_hard].clone()
+        soft_pos = benchmark.macro_positions[n_hard:n_hard+n_soft].clone() if n_soft > 0 else None
+
+        sys.stderr.write(f"  device: {self.device}\n")
+
+        for round_i in range(self.num_rounds):
+            steps = self.num_steps // self.num_rounds
+            label = f"round {round_i+1}/{self.num_rounds}"
+            sys.stderr.write(f"  {label}\n")
+
+            # --- Stage 1: Global placement (hard macros, gradient descent) ---
+            hard_pos = global_place(
+                hard_pos.to(self.device), hard_sizes, movable, cw, ch,
+                hard_nets, hard_nets_mask,
+                num_steps=steps,
+            ).cpu()
+
+            # --- Legalize: fix hard macro overlaps (numpy, CPU only) ---
+            pos_np = hard_pos.numpy().copy().astype(np.float64)
+            hard_pos = spiralsearch(
+                pos_np, movable_np, sizes_np, half_w, half_h, cw, ch, n_hard,
+                edges=edges, edge_weights=edge_weights,
+            )
+
+            # --- Stage 2: Re-optimize soft macros with hard macros fixed ---
+            if n_soft > 0 and all_nets is not None:
+                soft_pos = optimize_soft(
+                    hard_pos, soft_pos.to(self.device),
+                    hard_sizes, soft_sizes,
+                    cw, ch,
+                    all_nets, all_nets_mask,
+                    num_steps=steps,
+                ).cpu()
 
         full_pos = benchmark.macro_positions.clone()
-        full_pos[:n_hard] = pos_legal
+        full_pos[:n_hard] = hard_pos
+        if n_soft > 0 and soft_pos is not None:
+            full_pos[n_hard:n_hard+n_soft] = soft_pos
+
         return full_pos
 
 
@@ -292,12 +439,15 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="DREAMPlace-style analytical placer")
     parser.add_argument("--benchmark", "-b", required=True)
     parser.add_argument("--steps", "-n", type=int, default=1000)
+    parser.add_argument("--rounds", "-r", type=int, default=2)
+    parser.add_argument("--device", "-d", default="auto",
+                        help="'auto', 'cpu', 'cuda', or 'mps' (Apple GPU)")
     args = parser.parse_args()
 
     root = Path("external/MacroPlacement/Testcases/ICCAD04") / args.benchmark
     benchmark, plc = load_benchmark_from_dir(str(root))
 
-    placer = SAPlacer(num_steps=args.steps)
+    placer = SAPlacer(num_steps=args.steps, num_rounds=args.rounds, device=args.device)
     placement = placer.place(benchmark)
 
     result = compute_proxy_cost(placement, benchmark, plc)

@@ -96,8 +96,8 @@ def _extract_hard_edges(plc):
 # Force-directed placement for soft macros
 # ---------------------------------------------------------------------------
 
-def _fd_step(plc):
-    """Run one FD step on soft macros. Fast — called interleaved with placement."""
+def _fd_steps(plc, num_steps=1, attract=1.0, repel=1.0e4, max_move=1.0):
+    """Run FD steps on soft macros with configurable parameters."""
     plc.optimize_stdcells(
         use_current_loc=True,
         move_stdcells=True,
@@ -105,10 +105,10 @@ def _fd_step(plc):
         log_scale_conns=False,
         use_sizes=False,
         io_factor=1.0,
-        num_steps=[1],
-        max_move_distance=[1.0],
-        attract_factor=[1.0],
-        repel_factor=[1.0e4],
+        num_steps=[num_steps],
+        max_move_distance=[max_move],
+        attract_factor=[attract],
+        repel_factor=[repel],
     )
 
 
@@ -129,7 +129,7 @@ def _read_soft_positions(full_pos, benchmark, plc):
 
 def spiralsearch(pos, movable, sizes, half_w, half_h, cw, ch, n,
               edges=None, edge_weights=None, snapshot_fn=None,
-              fd_callback=None, fd_every=50):
+              fd_callback=None):
     """Legalize overlapping macros with minimal displacement.
 
     Places macros one-by-one (largest-area first). Each macro spirals
@@ -161,8 +161,8 @@ def spiralsearch(pos, movable, sizes, half_w, half_h, cw, ch, n,
         return cost
 
     canvas_diag = math.sqrt(cw ** 2 + ch ** 2)
-    conn_alpha = 0.15
-    EXTRA_RINGS = 5
+    conn_alpha = 0.05  # near-pure displacement minimization
+    EXTRA_RINGS = 8   # search very wide
 
     for step_i, idx in enumerate(order):
         _progress(step_i + 1, n, "legalize")
@@ -183,7 +183,7 @@ def spiralsearch(pos, movable, sizes, half_w, half_h, cw, ch, n,
                     snapshot_fn(step_i, legal, placed)
                 continue
 
-        step = max(sizes[idx, 0], sizes[idx, 1]) * 0.10
+        step = max(sizes[idx, 0], sizes[idx, 1]) * 0.05  # very fine for minimal displacement
         best_p = legal[idx].copy()
         best_d = float("inf")
         first_valid_ring = -1
@@ -225,9 +225,9 @@ def spiralsearch(pos, movable, sizes, half_w, half_h, cw, ch, n,
         if snapshot_fn is not None:
             snapshot_fn(step_i, legal, placed)
 
-        # Interleaved FD on soft macros every fd_every hard placements
-        if fd_callback is not None and (step_i + 1) % fd_every == 0:
-            fd_callback(legal)
+        # Interleaved FD on soft macros every 50 hard placements
+        if fd_callback is not None and (step_i + 1) % 50 == 0:
+            fd_callback(legal, (step_i + 1) / n)
 
     return torch.tensor(legal, dtype=torch.float32)
 
@@ -267,27 +267,27 @@ class SAPlacer:
         if self.visualize_every > 0:
             snapshot_fn = self._make_snapshot_fn(benchmark, plc)
 
-        # Build FD callback: pushes hard positions into plc, runs 1 FD step
+        # Build FD callback
         fd_callback = None
         if plc is not None and benchmark.num_soft_macros > 0:
             from macro_place.objective import _set_placement
-            def _fd_cb(legal_positions):
+            def _fd_cb(legal_positions, progress):
                 fp = benchmark.macro_positions.clone()
                 fp[:n_hard] = torch.tensor(legal_positions, dtype=torch.float32)
                 _set_placement(plc, fp, benchmark)
-                _fd_step(plc)
+                _fd_steps(plc, num_steps=1, attract=1.0, repel=1.0e4)
             fd_callback = _fd_cb
 
         pos = benchmark.macro_positions[:n_hard].numpy().copy().astype(np.float64)
         pos = spiralsearch(pos, movable, sizes, half_w, half_h, cw, ch, n_hard,
                         edges=edges, edge_weights=edge_weights,
                         snapshot_fn=snapshot_fn,
-                        fd_callback=fd_callback, fd_every=50)
+                        fd_callback=fd_callback)
 
         full_pos = benchmark.macro_positions.clone()
         full_pos[:n_hard] = pos
 
-        # Read final soft macro positions from plc
+        # Read final soft macro positions
         if plc is not None and benchmark.num_soft_macros > 0:
             full_pos = _read_soft_positions(full_pos, benchmark, plc)
 
@@ -301,7 +301,9 @@ class SAPlacer:
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
-        vis_dir = Path("vis") / benchmark.name
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        vis_dir = Path("vis") / f"{benchmark.name}_{timestamp}"
         vis_dir.mkdir(parents=True, exist_ok=True)
         k = self.visualize_every
         n_hard = benchmark.num_hard_macros
@@ -373,4 +375,7 @@ if __name__ == "__main__":
           f"cong={result['congestion_cost']:.3f})  "
           f"overlaps={result['overlap_count']}")
     if args.visualize > 0:
-        print(f"Frames saved to vis/{args.benchmark}/")
+        import glob
+        vis_dirs = sorted(glob.glob(f"vis/{args.benchmark}_*"))
+        if vis_dirs:
+            print(f"Frames saved to {vis_dirs[-1]}/")
