@@ -55,15 +55,17 @@ setup(
             libraries=["cufft"],
             define_macros=[("ENABLE_CUDA", "1")],
             extra_compile_args={
-                "cxx": (["/O2", "/std:c++17", "/DENABLE_CUDA"] if sys.platform == "win32"
+                # /Zc:preprocessor forces MSVC into standards-conforming preprocessor
+                # mode — required for DREAMPlace's variadic macros (msg.h etc.).
+                "cxx": (["/O2", "/std:c++17", "/Zc:preprocessor", "/DENABLE_CUDA"]
+                        if sys.platform == "win32"
                         else ["-O3", "-std=c++17", "-DENABLE_CUDA"]),
                 "nvcc": [
                     "-O3",
                     "--expt-relaxed-constexpr",
                     "-DENABLE_CUDA",
-                    # Ampere (30xx) / Ada (40xx) — adjust for your GPU (see README)
+                    # RTX A4000 = Ampere GA104 = sm_86 (change if retargeting — see README)
                     "-gencode=arch=compute_86,code=sm_86",
-                    "-gencode=arch=compute_89,code=sm_89",
                 ],
             },
         ),
