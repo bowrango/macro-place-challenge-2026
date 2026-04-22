@@ -25,21 +25,20 @@ from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 
-def _ucrt_include_or_none():
-    """Return the Windows UCRT include dir (from vcvarsall env) or None.
+def _system_include_dirs():
+    """Return the system include dirs that vcvarsall put in the INCLUDE env var.
 
-    DREAMPlace ships its own `dreamplace/ops/math.h` which shadows UCRT's
-    `<math.h>` when `dreamplace/ops` is an -I root. Prepending UCRT's path
-    to the -I list makes MSVC resolve `<math.h>` to the real C stdlib one.
+    DREAMPlace ships shadow headers (math.h, limits.h, ...) under its own tree.
+    Because `dreamplace/ops` and `utility/src` are -I roots, MSVC would resolve
+    `<math.h>` / `<limits.h>` to those shadows before falling back to the INCLUDE
+    env (which is searched AFTER all -I flags). Prepending the system paths as
+    explicit -I entries puts them BEFORE DREAMPlace on the search order, so
+    every C stdlib header resolves to the real MSVC/UCRT one.
     """
     if sys.platform != "win32":
-        return None
-    version = os.environ.get("UCRTVersion")
-    sdk_dir = os.environ.get("WindowsSdkDir")
-    if not version or not sdk_dir:
-        return None
-    path = Path(sdk_dir) / "Include" / version / "ucrt"
-    return str(path) if path.exists() else None
+        return []
+    include = os.environ.get("INCLUDE", "")
+    return [p for p in include.split(";") if p and Path(p).exists()]
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DREAMPLACE = REPO_ROOT / "external" / "DREAMPlace"
@@ -68,11 +67,11 @@ setup(
         CUDAExtension(
             name="cpp_ops._electric_potential",
             sources=sources,
-            # OPS_ROOT is required so `#include "utility/src/torch.h"` resolves,
-            # but it contains a shadow `math.h`. Prepending UCRT ensures the
-            # real `<math.h>` wins the -I search.
+            # OPS_ROOT / UTILITY_SRC are required so `#include "utility/src/..."`
+            # resolves, but they contain shadow C stdlib headers (math.h, limits.h, ...).
+            # Prepending the system include dirs ensures those stdlib headers win.
             include_dirs=(
-                ([_ucrt_include_or_none()] if _ucrt_include_or_none() else [])
+                _system_include_dirs()
                 + [str(OPS_ROOT), str(OP_SRC), str(UTILITY_SRC)]
             ),
             libraries=["cufft"],
