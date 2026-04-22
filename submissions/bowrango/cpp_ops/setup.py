@@ -18,10 +18,28 @@ After build, `import cpp_ops.electric_potential` from Python returns a
 callable that matches the DREAMPlace signature.
 """
 
+import os
 import sys
 from pathlib import Path
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
+
+
+def _ucrt_include_or_none():
+    """Return the Windows UCRT include dir (from vcvarsall env) or None.
+
+    DREAMPlace ships its own `dreamplace/ops/math.h` which shadows UCRT's
+    `<math.h>` when `dreamplace/ops` is an -I root. Prepending UCRT's path
+    to the -I list makes MSVC resolve `<math.h>` to the real C stdlib one.
+    """
+    if sys.platform != "win32":
+        return None
+    version = os.environ.get("UCRTVersion")
+    sdk_dir = os.environ.get("WindowsSdkDir")
+    if not version or not sdk_dir:
+        return None
+    path = Path(sdk_dir) / "Include" / version / "ucrt"
+    return str(path) if path.exists() else None
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DREAMPLACE = REPO_ROOT / "external" / "DREAMPlace"
@@ -50,8 +68,13 @@ setup(
         CUDAExtension(
             name="cpp_ops._electric_potential",
             sources=sources,
-            # OPS_ROOT is required so `#include "utility/src/torch.h"` resolves.
-            include_dirs=[str(OPS_ROOT), str(OP_SRC), str(UTILITY_SRC)],
+            # OPS_ROOT is required so `#include "utility/src/torch.h"` resolves,
+            # but it contains a shadow `math.h`. Prepending UCRT ensures the
+            # real `<math.h>` wins the -I search.
+            include_dirs=(
+                ([_ucrt_include_or_none()] if _ucrt_include_or_none() else [])
+                + [str(OPS_ROOT), str(OP_SRC), str(UTILITY_SRC)]
+            ),
             libraries=["cufft"],
             define_macros=[("ENABLE_CUDA", "1")],
             extra_compile_args={
@@ -66,6 +89,9 @@ setup(
                     "-DENABLE_CUDA",
                     # RTX A4000 = Ampere GA104 = sm_86 (change if retargeting — see README)
                     "-gencode=arch=compute_86,code=sm_86",
+                    # Pass /Zc:preprocessor through to MSVC for the host compile of .cu
+                    # files — required for DREAMPlace's variadic macros (msg.h:50).
+                    "-Xcompiler=/Zc:preprocessor",
                 ],
             },
         ),
