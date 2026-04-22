@@ -25,8 +25,9 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DREAMPLACE = REPO_ROOT / "external" / "DREAMPlace"
-OP_SRC = DREAMPLACE / "dreamplace" / "ops" / "electric_potential" / "src"
-UTILITY_SRC = DREAMPLACE / "dreamplace" / "ops" / "utility" / "src"
+OPS_ROOT = DREAMPLACE / "dreamplace" / "ops"
+OP_SRC = OPS_ROOT / "electric_potential" / "src"
+UTILITY_SRC = OPS_ROOT / "utility" / "src"
 
 if not OP_SRC.exists():
     raise RuntimeError(
@@ -49,7 +50,8 @@ setup(
         CUDAExtension(
             name="cpp_ops._electric_potential",
             sources=sources,
-            include_dirs=[str(OP_SRC), str(UTILITY_SRC)],
+            # OPS_ROOT is required so `#include "utility/src/torch.h"` resolves.
+            include_dirs=[str(OPS_ROOT), str(OP_SRC), str(UTILITY_SRC)],
             libraries=["cufft"],
             define_macros=[("ENABLE_CUDA", "1")],
             extra_compile_args={
