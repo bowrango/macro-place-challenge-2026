@@ -15,12 +15,13 @@ if not exist %VCVARS% (
     goto :error
 )
 
-echo === Pinning MSVC toolset to v14.40 ===
-call %VCVARS% x64 -vcvars_ver=14.40
+echo === Pinning MSVC toolset to v14.40 and Windows SDK to 10.0.22621 ===
+call %VCVARS% x64 10.0.22621.0 -vcvars_ver=14.40
 if errorlevel 1 (
-    echo ERROR: vcvarsall.bat failed. Is MSVC v14.40 toolset installed?
-    echo Install via Visual Studio Installer -^> Modify -^> Individual components
-    echo -^> "MSVC v143 - VS 2022 C++ x64/x86 build tools ^(v14.40-17.10^)".
+    echo ERROR: vcvarsall.bat failed. Check:
+    echo  - MSVC v14.40 toolset installed ^(VS Installer -^> Individual components
+    echo    -^> "MSVC v143 - VS 2022 C++ x64/x86 build tools v14.40-17.10"^)
+    echo  - Windows 11 SDK 10.0.22621.0 installed ^(same place, search "22621"^)
     goto :error
 )
 
