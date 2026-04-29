@@ -5,7 +5,7 @@ Core algorithm:
 1. Initialize from benchmark positions
 2. Gradient descent on: wirelength (log-sum-exp) + lambda * density (smooth)
 3. Nesterov momentum, lambda ramped over iterations
-4. Legalize with spiral search to remove remaining overlaps
+4. Legalize via vectorized pairwise repulsion (GPU)
 
 Usage:
     uv run evaluate submissions/bowrango/dreamplacer.py -b ibm01
@@ -95,12 +95,8 @@ def lse_wirelength(pos, nets_padded, nets_mask, gamma):
 # ---------------------------------------------------------------------------
 
 def smooth_density(pos, sizes, canvas_w, canvas_h, num_bins_x, num_bins_y):
-    """Compute smooth density on a grid using overlap-area kernel.
-
-    Returns the density grid (num_bins_y, num_bins_x) and the overflow penalty.
-    The penalty is sum of squared overflow above target density 1.0,
-    matching the proxy cost focus on worst cells.
-    """
+    """Smooth density via overlap-area kernel. Returns sum of squared overflow
+    above target density 1.0, matching the proxy cost focus on worst cells."""
     bin_w = canvas_w / num_bins_x
     bin_h = canvas_h / num_bins_y
 
@@ -131,6 +127,59 @@ def smooth_density(pos, sizes, canvas_w, canvas_h, num_bins_x, num_bins_y):
     target = 1.0
     overflow = F.relu(density - target)
     return (overflow ** 2).sum()
+
+
+# ---------------------------------------------------------------------------
+# Electrostatic density: FFT Poisson solver (DREAMPlace / ePlace)
+# ---------------------------------------------------------------------------
+
+def electrostatic_density(pos, sizes, canvas_w, canvas_h, num_bins_x, num_bins_y):
+    """FFT-based electrostatic density loss, following DREAMPlace (Lin et al., DAC'19).
+
+    Treat macros as charges rasterized onto a bin grid. Subtract the mean to
+    neutralize total charge (required for a periodic-BC Poisson solver), then
+    solve ∇²φ = -ρ in Fourier space where the Laplacian is multiplication by
+    -(kx² + ky²). The electrostatic energy E = Σ ρ·φ is the density loss;
+    autograd w.r.t. positions yields the electric field that repels macros
+    from high-density regions — same mechanism DREAMPlace uses, just in
+    PyTorch so torch.fft.rfft2 calls cuFFT on CUDA and MKL/FFTW on CPU.
+    """
+    device = pos.device
+    bin_w = canvas_w / num_bins_x
+    bin_h = canvas_h / num_bins_y
+
+    # --- Rasterize macros onto the bin grid via 1D interval overlap ---
+    bx = torch.linspace(bin_w / 2, canvas_w - bin_w / 2, num_bins_x, device=device)
+    by = torch.linspace(bin_h / 2, canvas_h - bin_h / 2, num_bins_y, device=device)
+    hw = sizes[:, 0:1] / 2  # (N, 1)
+    hh = sizes[:, 1:2] / 2
+
+    # Overlap of macro interval [pos - h, pos + h] with bin [center - size/2, center + size/2].
+    left_x = torch.maximum(pos[:, 0:1] - hw, bx.unsqueeze(0) - bin_w / 2)
+    right_x = torch.minimum(pos[:, 0:1] + hw, bx.unsqueeze(0) + bin_w / 2)
+    overlap_x = (right_x - left_x).clamp(min=0)  # (N, Bx)
+
+    left_y = torch.maximum(pos[:, 1:2] - hh, by.unsqueeze(0) - bin_h / 2)
+    right_y = torch.minimum(pos[:, 1:2] + hh, by.unsqueeze(0) + bin_h / 2)
+    overlap_y = (right_y - left_y).clamp(min=0)  # (N, By)
+
+    # Shape (By, Bx) so rfft2's reduced axis (last) aligns with kx below.
+    density = torch.einsum('ni,nj->ij', overlap_y, overlap_x) / (bin_w * bin_h)
+
+    # --- Zero-mean charge (target density subtracted) ---
+    density = density - density.mean()
+
+    # --- Poisson solver: φ̂ = ρ̂ / (kx² + ky²), DC = 0 ---
+    rho_hat = torch.fft.rfft2(density)  # (By, Bx // 2 + 1)
+    kx = torch.fft.rfftfreq(num_bins_x, d=bin_w, device=device) * (2 * math.pi)
+    ky = torch.fft.fftfreq(num_bins_y, d=bin_h, device=device) * (2 * math.pi)
+    k2 = kx.unsqueeze(0) ** 2 + ky.unsqueeze(1) ** 2
+
+    inv_k2 = torch.where(k2 > 0, 1.0 / k2.clamp(min=1e-12), torch.zeros_like(k2))
+    phi = torch.fft.irfft2(rho_hat * inv_k2, s=(num_bins_y, num_bins_x))
+
+    # Electrostatic energy; gradient w.r.t. pos is the density force.
+    return (density * phi).sum() * (bin_w * bin_h)
 
 
 # ---------------------------------------------------------------------------
@@ -207,7 +256,9 @@ def global_place(pos_init, sizes, movable, canvas_w, canvas_h,
         # Forward: wirelength
         wl = lse_wirelength(pos, nets_padded, nets_mask, gamma)
 
-        # Forward: density
+        # Forward: density. Swap to `electrostatic_density` (FFT/Poisson, DREAMPlace
+        # electrostatic) once the adaptive-lambda schedule is tuned for its larger
+        # gradient magnitudes.
         den = smooth_density(pos, sizes_f, canvas_w, canvas_h,
                               num_bins_x, num_bins_y)
 
@@ -259,76 +310,69 @@ def global_place(pos_init, sizes, movable, canvas_w, canvas_h,
 
 
 # ---------------------------------------------------------------------------
-# Soft macro optimization: gradient descent on wirelength + light density
+# Nearest-escape legalization
 # ---------------------------------------------------------------------------
 
-def optimize_soft(hard_pos, soft_pos_init, hard_sizes, soft_sizes,
-                  canvas_w, canvas_h, nets_padded, nets_mask,
-                  num_steps=200, base_lr=0.01, gamma=None):
-    """Optimize soft macro positions with hard macros fixed.
+def legalize_snap(pos, sizes, movable_mask, canvas_w, canvas_h,
+                  max_iter=50, eps=0.01):
+    """Snap each movable macro to its nearest non-overlapping position.
 
-    Minimizes wirelength (LSE) + light density penalty.
-    No overlap constraints — soft macros may overlap each other.
-    Uses the same LSE wirelength over the combined hard+soft position tensor.
+    Processes macros largest-first. For each, if overlapping any already-
+    placed macro, iteratively pushes along the smallest-overlap axis of the
+    tightest-binding neighbor until free (or max_iter reached). No rings,
+    no displacement-cost balancing — pure nearest-escape.
     """
-    n_hard = hard_pos.shape[0]
-    n_soft = soft_pos_init.shape[0]
+    device = pos.device
+    pos_np = pos.detach().cpu().numpy().astype(np.float64)
+    sizes_np = sizes.cpu().numpy().astype(np.float64)
+    movable_np = movable_mask.cpu().numpy()
+    n = len(pos_np)
 
-    if nets_padded is None or n_soft == 0:
-        return soft_pos_init.clone()
+    order = np.argsort(-sizes_np[:, 0] * sizes_np[:, 1])
+    placed = np.zeros(n, dtype=bool)
 
-    device = soft_pos_init.device
-    hard_pos = hard_pos.to(device).float()
-    soft_sizes = soft_sizes.to(device)
-    nets_padded = nets_padded.to(device)
-    nets_mask = nets_mask.to(device)
+    for step_i, i in enumerate(order):
+        _progress(step_i + 1, n, "legalize")
+        if not movable_np[i]:
+            placed[i] = True
+            continue
 
-    # Only soft macros are optimized
-    soft_pos = soft_pos_init.clone().float().requires_grad_(True)
+        placed_idx = np.where(placed)[0]
+        if placed_idx.size == 0:
+            placed[i] = True
+            continue
 
-    half_w = soft_sizes[:, 0].float() / 2
-    half_h = soft_sizes[:, 1].float() / 2
+        x, y = pos_np[i]
+        w, h = sizes_np[i]
+        hw, hh = w / 2, h / 2
+        px = pos_np[placed_idx, 0]
+        py = pos_np[placed_idx, 1]
+        sep_x = (w + sizes_np[placed_idx, 0]) / 2 + eps
+        sep_y = (h + sizes_np[placed_idx, 1]) / 2 + eps
 
-    if gamma is None:
-        gamma = max(1.0, math.sqrt(canvas_w * canvas_h) / 50.0)
+        for _ in range(max_iter):
+            dx = x - px
+            dy = y - py
+            ox = np.maximum(0, sep_x - np.abs(dx))
+            oy = np.maximum(0, sep_y - np.abs(dy))
+            overlapping = (ox > 0) & (oy > 0)
+            if not overlapping.any():
+                break
+            # Pick the overlap with smallest escape distance and push along that axis
+            escape = np.minimum(ox, oy)
+            escape[~overlapping] = np.inf
+            j = int(escape.argmin())
+            if ox[j] <= oy[j]:
+                x += (1.0 if dx[j] >= 0 else -1.0) * ox[j]
+                x = min(max(x, hw), canvas_w - hw)
+            else:
+                y += (1.0 if dy[j] >= 0 else -1.0) * oy[j]
+                y = min(max(y, hh), canvas_h - hh)
 
-    # Light density: fewer bins, weaker penalty
-    num_bins = max(8, min(32, int(math.sqrt(n_hard + n_soft))))
+        pos_np[i] = [x, y]
+        placed[i] = True
 
-    optimizer = torch.optim.Adam([soft_pos], lr=base_lr)
-
-    # Compute initial WL for normalization
-    with torch.no_grad():
-        combined = torch.cat([hard_pos.float(), soft_pos], dim=0)
-        wl_0 = lse_wirelength(combined, nets_padded, nets_mask, gamma).item()
-    wl_norm = max(wl_0, 1.0)
-
-    for step in range(num_steps):
-        optimizer.zero_grad()
-
-        combined = torch.cat([hard_pos.float(), soft_pos], dim=0)
-
-        # Wirelength over all nets (hard + soft)
-        wl = lse_wirelength(combined, nets_padded, nets_mask, gamma) / wl_norm
-
-        # Light density on soft macros only (they can overlap, so weak penalty)
-        den = smooth_density(soft_pos, soft_sizes.float(), canvas_w, canvas_h,
-                              num_bins, num_bins) * 0.1
-
-        loss = wl + den
-        loss.backward()
-        optimizer.step()
-
-        # Clamp to canvas
-        with torch.no_grad():
-            soft_pos.data[:, 0].clamp_(half_w, canvas_w - half_w)
-            soft_pos.data[:, 1].clamp_(half_h, canvas_h - half_h)
-
-        if (step + 1) % 50 == 0 or step == 0:
-            _progress(step + 1, num_steps, "softs")
-
-    _progress(num_steps, num_steps, "softs")
-    return soft_pos.detach()
+    return torch.tensor(pos_np, dtype=torch.float32, device=device)
 
 
 # ---------------------------------------------------------------------------
@@ -336,13 +380,12 @@ def optimize_soft(hard_pos, soft_pos_init, hard_sizes, soft_sizes,
 # ---------------------------------------------------------------------------
 
 class SAPlacer:
-    """DREAMPlace-style 2-stage global placement with legalization loop.
+    """DREAMPlace-style analytical placer.
 
-    Following the DREAMPlace flow:
-    1. Global placement (gradient descent on all macros)
-    2. Converge? → Legalize hard macros (spiral search)
-    3. Fix hard macros, re-optimize soft macros
-    4. Macros fixed? → if not, repeat from 1 with legalized positions
+    Flow:
+    1. Gradient descent on hard macros (LSE wirelength + smooth density), on device.
+    2. Snap each overlapping hard macro to its nearest non-overlapping position.
+    3. Soft macros stay at their benchmark initial positions (validated to be good).
     """
 
     def __init__(self, seed: int = 42, num_steps: int = 300, num_rounds: int = 2,
@@ -359,75 +402,34 @@ class SAPlacer:
         torch.manual_seed(self.seed)
 
         n_hard = benchmark.num_hard_macros
-        n_soft = benchmark.num_soft_macros
         hard_sizes = benchmark.macro_sizes[:n_hard]
-        soft_sizes = benchmark.macro_sizes[n_hard:n_hard+n_soft] if n_soft > 0 else None
         cw = float(benchmark.canvas_width)
         ch = float(benchmark.canvas_height)
         movable = benchmark.get_movable_mask()[:n_hard]
 
         plc = _load_plc(benchmark.name)
+        hard_nets, hard_nets_mask = (
+            _build_net_data(plc, n_hard) if plc is not None else (None, None)
+        )
 
-        # Build net data
-        hard_nets, hard_nets_mask = None, None
-        all_nets, all_nets_mask = None, None
-        if plc is not None:
-            hard_nets, hard_nets_mask = _build_net_data(plc, n_hard)
-            if n_soft > 0:
-                all_nets, all_nets_mask = _build_net_data(plc, n_hard, n_soft)
-
-        # Edges for spiral search
-        if plc is not None:
-            edges, edge_weights = _extract_hard_edges(plc)
-        else:
-            edges = np.zeros((0, 2), dtype=np.int64)
-            edge_weights = np.zeros(0, dtype=np.float64)
-
-        sizes_np = hard_sizes.numpy().astype(np.float64)
-        half_w = sizes_np[:, 0] / 2
-        half_h = sizes_np[:, 1] / 2
-        movable_np = movable.numpy()
-
-        # Start from benchmark positions
-        hard_pos = benchmark.macro_positions[:n_hard].clone()
-        soft_pos = benchmark.macro_positions[n_hard:n_hard+n_soft].clone() if n_soft > 0 else None
-
+        hard_pos = benchmark.macro_positions[:n_hard].clone().to(self.device)
         sys.stderr.write(f"  device: {self.device}\n")
 
         for round_i in range(self.num_rounds):
             steps = self.num_steps // self.num_rounds
-            label = f"round {round_i+1}/{self.num_rounds}"
-            sys.stderr.write(f"  {label}\n")
+            sys.stderr.write(f"  round {round_i+1}/{self.num_rounds}\n")
 
-            # --- Stage 1: Global placement (hard macros, gradient descent) ---
             hard_pos = global_place(
-                hard_pos.to(self.device), hard_sizes, movable, cw, ch,
+                hard_pos, hard_sizes, movable, cw, ch,
                 hard_nets, hard_nets_mask,
                 num_steps=steps,
-            ).cpu()
-
-            # --- Legalize: fix hard macro overlaps (numpy, CPU only) ---
-            pos_np = hard_pos.numpy().copy().astype(np.float64)
-            hard_pos = spiralsearch(
-                pos_np, movable_np, sizes_np, half_w, half_h, cw, ch, n_hard,
-                edges=edges, edge_weights=edge_weights,
             )
 
-            # --- Stage 2: Re-optimize soft macros with hard macros fixed ---
-            if n_soft > 0 and all_nets is not None:
-                soft_pos = optimize_soft(
-                    hard_pos, soft_pos.to(self.device),
-                    hard_sizes, soft_sizes,
-                    cw, ch,
-                    all_nets, all_nets_mask,
-                    num_steps=steps,
-                ).cpu()
+            hard_pos = legalize_snap(hard_pos, hard_sizes, movable, cw, ch)
+            hard_pos = hard_pos.to(self.device)
 
         full_pos = benchmark.macro_positions.clone()
-        full_pos[:n_hard] = hard_pos
-        if n_soft > 0 and soft_pos is not None:
-            full_pos[n_hard:n_hard+n_soft] = soft_pos
-
+        full_pos[:n_hard] = hard_pos.cpu()
         return full_pos
 
 
