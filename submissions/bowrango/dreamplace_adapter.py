@@ -449,67 +449,87 @@ class DreamPlaceAdapter:
         logger.info("build complete in %.0fs", time.time() - t0)
 
 
+def _config_defaults() -> dict:
+    """All `DreamPlaceConfig` field defaults, sourced via introspection.
+    Single source of truth for both programmatic and CLI defaults."""
+    import inspect
+    return {
+        name: param.default
+        for name, param in inspect.signature(DreamPlaceConfig.__init__).parameters.items()
+        if name != "self" and param.default is not inspect.Parameter.empty
+    }
+
+
 def main() -> None:
     import argparse
     from macro_place.loader import load_benchmark_from_dir
     from macro_place.objective import compute_proxy_cost
 
-    parser = argparse.ArgumentParser(description="DREAMPlace via Docker")
-    parser.add_argument("--build", action="store_true",
-                        help="Build DREAMPlace inside the container and exit.")
-    parser.add_argument("--force-rebuild", action="store_true")
-    parser.add_argument("--jobs", "-j", type=int, default=2,
-                        help="With --build, parallel make jobs (default 2).")
-    parser.add_argument("--benchmark", "-b", default="ibm01")
-    parser.add_argument("--iterations", "-n", type=int, default=3000)
-    parser.add_argument("--target-density", type=float, default=0.80)
-    parser.add_argument("--legalize", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Run DREAMPlace's macro legalizer (default on; "
-                             "pass --no-legalize to skip).")
-    parser.add_argument("--detailed", action="store_true",
-                        help="Run DREAMPlace's ABCDPlace detailed placement.")
-    parser.add_argument("--fillers", action="store_true",
-                        help="Filler-cell padding to reach target_density.")
-    parser.add_argument("--stop-overflow", type=float, default=0.005,
-                        help="Convergence threshold for global placement "
-                             "(default 0.005). Tighter forces fuller convergence.")
-    parser.add_argument("--num-bins", type=int, default=256,
-                        help="Density-grid resolution per axis (default 256).")
-    parser.add_argument("--spiral-cleanup", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Min-displacement spiral search over hard macros "
-                             "to clear residual overlaps after DREAMPlace "
-                             "(default on; pass --no-spiral-cleanup to skip).")
-    parser.add_argument("--auto-tune", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Pick target_density/stop_overflow/iterations "
-                             "from benchmark size at runtime (default on; "
-                             "pass --no-auto-tune to honor the explicit "
-                             "--target-density/--stop-overflow/--iterations "
-                             "values for every benchmark).")
-    parser.add_argument("--plot", action="store_true",
-                        help="Write PNG snapshots of global placement to "
-                             "dreamplace_work/<bench>/<bench>/plot/.")
+    cfg = _config_defaults()
+    bool_optional = argparse.BooleanOptionalAction
+
     def _positive_int(s: str) -> int:
         v = int(s)
         if v < 1:
             raise argparse.ArgumentTypeError(f"must be >= 1, got {v}")
         return v
 
-    parser.add_argument("--plot-every", type=_positive_int, default=1,
-                        help="With --plot, snapshot every N global-placement "
-                             "iterations (default 1).")
-    parser.add_argument("--keep-work", action=argparse.BooleanOptionalAction,
-                        default=True,
-                        help="Preserve Bookshelf inputs and DREAMPlace "
-                             "outputs under dreamplace_work/<bench>/ "
-                             "(default on; pass --no-keep-work to clean up).")
-    parser.add_argument("--image", default=DEFAULT_IMAGE)
-    parser.add_argument("--platform", default=DEFAULT_PLATFORM)
-    parser.add_argument("--gpu", type=int, default=0)
-    args = parser.parse_args()
+    parser = argparse.ArgumentParser(description="DREAMPlace via Docker")
 
+    # Build sub-command and CLI-only options.
+    parser.add_argument("--build", action="store_true",
+                        help="Build DREAMPlace inside the container and exit.")
+    parser.add_argument("--force-rebuild", action="store_true")
+    parser.add_argument("--jobs", "-j", type=int, default=2,
+                        help="With --build, parallel make jobs.")
+    parser.add_argument("--benchmark", "-b", default="ibm01")
+
+    # DreamPlaceConfig-bound options. All defaults come from cfg[...] so
+    # editing DreamPlaceConfig.__init__ is the only place to change them.
+    parser.add_argument("--iterations", "-n", type=int,
+                        default=cfg["iterations"])
+    parser.add_argument("--target-density", type=float,
+                        default=cfg["target_density"])
+    parser.add_argument("--stop-overflow", type=float,
+                        default=cfg["stop_overflow"],
+                        help="Convergence threshold for global placement.")
+    parser.add_argument("--num-bins", type=int,
+                        default=cfg["num_bins"],
+                        help="Density-grid resolution per axis.")
+    parser.add_argument("--legalize", action=bool_optional,
+                        default=cfg["legalize"],
+                        help="Run DREAMPlace's macro legalizer.")
+    parser.add_argument("--detailed", action=bool_optional,
+                        default=cfg["detailed"],
+                        help="Run DREAMPlace's ABCDPlace detailed placement.")
+    parser.add_argument("--fillers", action=bool_optional,
+                        default=cfg["enable_fillers"],
+                        help="Filler-cell padding to reach target_density.")
+    parser.add_argument("--spiral-cleanup", action=bool_optional,
+                        default=cfg["spiral_cleanup"],
+                        help="Min-displacement spiral search over hard macros "
+                             "to clear residual overlaps after DREAMPlace.")
+    parser.add_argument("--auto-tune", action=bool_optional,
+                        default=cfg["auto_tune"],
+                        help="Pick target_density/stop_overflow/iterations "
+                             "from benchmark size at runtime; --no-auto-tune "
+                             "honors explicit values for every benchmark.")
+    parser.add_argument("--plot", action=bool_optional,
+                        default=cfg["plot"],
+                        help="Write PNG snapshots of global placement to "
+                             "dreamplace_work/<bench>/<bench>/plot/.")
+    parser.add_argument("--plot-every", type=_positive_int,
+                        default=cfg["plot_every"],
+                        help="With --plot, snapshot every N global-placement iterations.")
+    parser.add_argument("--keep-work", action=bool_optional,
+                        default=cfg["keep_work"],
+                        help="Preserve Bookshelf inputs and DREAMPlace "
+                             "outputs under dreamplace_work/<bench>/.")
+    parser.add_argument("--image", default=cfg["image"])
+    parser.add_argument("--platform", default=cfg["platform"])
+    parser.add_argument("--gpu", type=int, default=cfg["gpu"])
+
+    args = parser.parse_args()
     _ensure_default_logging()
 
     if args.build:
