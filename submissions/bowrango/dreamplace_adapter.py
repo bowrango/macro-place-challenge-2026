@@ -30,7 +30,13 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WORK_ROOT = Path(__file__).resolve().parent / "dreamplace_work"
 DREAMPLACE_SRC = REPO_ROOT / "external/DREAMPlace"
 
-DEFAULT_IMAGE = "limbo018/dreamplace:cuda"
+def _default_image() -> str:
+    """limbo018 base on Mac (CPU prototyping); local CUDA 11.8 build on
+    Windows (RTX A4000 is sm_86, needs CUDA 11+). Override via --image."""
+    return "bowrango/dreamplace:cuda118" if os.name == "nt" else "limbo018/dreamplace:cuda"
+
+
+DEFAULT_IMAGE = _default_image()
 DEFAULT_PLATFORM = "linux/amd64"
 
 CONTAINER_WORK = "/work"
@@ -112,9 +118,9 @@ class DreamPlaceConfig:
 
     __slots__ = (
         "image", "platform", "gpu", "iterations", "target_density",
-        "legalize", "detailed", "enable_fillers", "stop_overflow",
-        "num_bins", "spiral_cleanup", "auto_tune", "plot", "plot_every",
-        "keep_work", "timeout", "dreamplace_src",
+        "density_weight", "legalize", "detailed", "enable_fillers",
+        "stop_overflow", "num_bins", "spiral_cleanup",
+        "plot", "plot_every", "keep_work", "timeout", "dreamplace_src",
     )
 
     def __init__(
@@ -123,15 +129,16 @@ class DreamPlaceConfig:
         image: str = DEFAULT_IMAGE,
         platform: str = DEFAULT_PLATFORM,
         gpu: int = 0,
-        iterations: int = 3000,
+        iterations: int = 1000,
         target_density: float = 0.80,
+        # density_weight: float | str = "auto",
+        density_weight: float =4e-5,
         legalize: bool = True,
         detailed: bool = False,
         enable_fillers: bool = False,
         stop_overflow: float = 0.005,
         num_bins: int = 256,
         spiral_cleanup: bool = True,
-        auto_tune: bool = True,
         plot: bool = False,
         plot_every: int = 1,
         keep_work: bool = True,
@@ -143,13 +150,13 @@ class DreamPlaceConfig:
         self.gpu = gpu
         self.iterations = iterations
         self.target_density = target_density
+        self.density_weight = density_weight
         self.legalize = legalize
         self.detailed = detailed
         self.enable_fillers = enable_fillers
         self.stop_overflow = stop_overflow
         self.num_bins = num_bins
         self.spiral_cleanup = spiral_cleanup
-        self.auto_tune = auto_tune
         self.plot = plot
         self.plot_every = plot_every
         self.keep_work = keep_work
@@ -161,20 +168,16 @@ class DreamPlaceConfig:
         return f"DreamPlaceConfig({fields})"
 
 
-def _benchmark_profile(benchmark: Benchmark) -> dict:
-    """Pick `(target_density, stop_overflow, iterations)` from benchmark size.
-
-    On small canvases (e.g. ibm01 at 23×23 µm), the 256-bin density grid
-    produces sub-µm bins. At `target_density=0.80` plus tight convergence,
-    the per-bin density gradient is steep enough to NaN the optimizer mid-run
-    (asserts inside MacroLegalize's longest-path solver). Use the upstream-
-    safe defaults there. On larger canvases the aggressive ibm10-tuned
-    settings give better spreading for the same wall time.
-    """
+def _auto_density_weight(benchmark: Benchmark) -> float:
+    """`density_weight ∝ utilization × num_macros / canvas_area`. Constant
+    calibrated so ibm01 (util≈0.43, 1140 macros / 527 µm²) → 8e-5."""
     canvas_area = benchmark.canvas_width * benchmark.canvas_height
-    if canvas_area < 1000.0:
-        return {"target_density": 1.0, "stop_overflow": 0.02, "iterations": 1000}
-    return {"target_density": 0.80, "stop_overflow": 0.005, "iterations": 3000}
+    macro_area = float(
+        (benchmark.macro_sizes[:, 0] * benchmark.macro_sizes[:, 1]).sum()
+    )
+    utilization = macro_area / canvas_area
+    cell_density = benchmark.num_macros / canvas_area
+    return 8.6e-5 * utilization * cell_density
 
 
 class DreamPlaceAdapter:
@@ -199,21 +202,20 @@ class DreamPlaceAdapter:
         cfg = self.config
         plc = _load_plc(benchmark.name)
 
-        if cfg.auto_tune:
-            profile = _benchmark_profile(benchmark)
-            target_density = profile["target_density"]
-            stop_overflow = profile["stop_overflow"]
-            iterations = profile["iterations"]
+        if cfg.density_weight == "auto":
+            density_weight = _auto_density_weight(benchmark)
+            canvas_area = benchmark.canvas_width * benchmark.canvas_height
+            macro_area = float(
+                (benchmark.macro_sizes[:, 0] * benchmark.macro_sizes[:, 1]).sum()
+            )
             logger.info(
-                "auto-tune (canvas %.1f µm²): target_density=%.2f "
-                "stop_overflow=%.4f iterations=%d",
-                benchmark.canvas_width * benchmark.canvas_height,
-                target_density, stop_overflow, iterations,
+                "density_weight=auto → %.2e "
+                "(util=%.3f, num_macros=%d, canvas=%.1f µm²)",
+                density_weight, macro_area / canvas_area,
+                benchmark.num_macros, canvas_area,
             )
         else:
-            target_density = cfg.target_density
-            stop_overflow = cfg.stop_overflow
-            iterations = cfg.iterations
+            density_weight = cfg.density_weight
 
         WORK_ROOT.mkdir(parents=True, exist_ok=True)
         work = WORK_ROOT / benchmark.name
@@ -229,15 +231,16 @@ class DreamPlaceAdapter:
             work_dir_in_container=CONTAINER_WORK,
             name=benchmark.name,
             config_path=work / f"{benchmark.name}.json",
-            iterations=iterations,
-            target_density=target_density,
+            iterations=cfg.iterations,
+            target_density=cfg.target_density,
             gpu=cfg.gpu,
             legalize=cfg.legalize,
             detailed=cfg.detailed,
             enable_fillers=cfg.enable_fillers,
-            stop_overflow=stop_overflow,
+            stop_overflow=cfg.stop_overflow,
             plot=cfg.plot,
             num_bins=cfg.num_bins,
+            density_weight=density_weight,
         )
 
         config_in = f"{CONTAINER_WORK}/{benchmark.name}.json"
@@ -325,7 +328,7 @@ class DreamPlaceAdapter:
             cfg.image,
             "bash", "-c",
             f"mkdir -p $MPLCONFIGDIR && "
-            f"python -u {container_adapter}/dreamplace_runner.py "
+            f"python3 -u {container_adapter}/dreamplace_runner.py "
             f"{config_in_container}",
         ]
         logger.info("%s", " ".join(cmd))
@@ -423,7 +426,7 @@ class DreamPlaceAdapter:
             f"set -euo pipefail && cd {CONTAINER_DREAMPLACE} && "
             f"mkdir -p build install && cd build && "
             f"cmake .. -DCMAKE_INSTALL_PREFIX={CONTAINER_INSTALL} "
-            f"-DPython_EXECUTABLE=$(which python) && "
+            f"-DPython_EXECUTABLE=$(which python3) && "
             f"make -j{jobs} && make install"
         )
         cmd = [
@@ -474,6 +477,31 @@ def main() -> None:
             raise argparse.ArgumentTypeError(f"must be >= 1, got {v}")
         return v
 
+    def _density_weight_arg(s: str):
+        """Accept 'auto' (cell-density-scaled) or a positive float."""
+        if s.lower() == "auto":
+            return "auto"
+        try:
+            v = float(s)
+        except ValueError:
+            raise argparse.ArgumentTypeError(
+                f"--density-weight must be 'auto' or a float, got {s!r}"
+            )
+        if v <= 0.0:
+            raise argparse.ArgumentTypeError(
+                f"--density-weight must be positive, got {v}"
+            )
+        return v
+
+    def _target_density_arg(s: str) -> float:
+        """Float in (0, 1]."""
+        v = float(s)
+        if not 0.0 < v <= 1.0:
+            raise argparse.ArgumentTypeError(
+                f"--target-density must be in (0, 1], got {v}"
+            )
+        return v
+
     parser = argparse.ArgumentParser(description="DREAMPlace via Docker")
 
     # Build sub-command and CLI-only options.
@@ -488,8 +516,16 @@ def main() -> None:
     # editing DreamPlaceConfig.__init__ is the only place to change them.
     parser.add_argument("--iterations", "-n", type=int,
                         default=cfg["iterations"])
-    parser.add_argument("--target-density", type=float,
-                        default=cfg["target_density"])
+    parser.add_argument("--target-density", type=_target_density_arg,
+                        default=cfg["target_density"],
+                        help="DREAMPlace bin-occupancy ceiling, in (0, 1]. "
+                             "Lower spreads more.")
+    parser.add_argument("--density-weight", type=_density_weight_arg,
+                        default=cfg["density_weight"],
+                        help="Scales the spreading force vs wirelength force "
+                             "at iteration 0 (sets λ_0). 'auto' (default) "
+                             "picks from utilization × cell density; or pass "
+                             "a positive float to fix it.")
     parser.add_argument("--stop-overflow", type=float,
                         default=cfg["stop_overflow"],
                         help="Convergence threshold for global placement.")
@@ -509,11 +545,6 @@ def main() -> None:
                         default=cfg["spiral_cleanup"],
                         help="Min-displacement spiral search over hard macros "
                              "to clear residual overlaps after DREAMPlace.")
-    parser.add_argument("--auto-tune", action=bool_optional,
-                        default=cfg["auto_tune"],
-                        help="Pick target_density/stop_overflow/iterations "
-                             "from benchmark size at runtime; --no-auto-tune "
-                             "honors explicit values for every benchmark.")
     parser.add_argument("--plot", action=bool_optional,
                         default=cfg["plot"],
                         help="Write PNG snapshots of global placement to "
@@ -547,13 +578,13 @@ def main() -> None:
         gpu=args.gpu,
         iterations=args.iterations,
         target_density=args.target_density,
+        density_weight=args.density_weight,
         legalize=args.legalize,
         detailed=args.detailed,
         enable_fillers=args.fillers,
         stop_overflow=args.stop_overflow,
         num_bins=args.num_bins,
         spiral_cleanup=args.spiral_cleanup,
-        auto_tune=args.auto_tune,
         plot=args.plot,
         plot_every=args.plot_every,
         keep_work=args.keep_work,
