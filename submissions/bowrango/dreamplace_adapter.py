@@ -1,12 +1,13 @@
 """
 DREAMPlace adapter.
 
-Wraps `limbo018/dreamplace:cuda` Docker as a placer:
+Wraps a DREAMPlace Docker image as a placer:
     uv run evaluate submissions/bowrango/dreamplace_adapter.py -b ibm01
 
 Per-call flow: Bookshelf write → JSON config → docker run → read .pl →
-optional spiral cleanup. One-time build:
-    uv run python submissions/bowrango/dreamplace_adapter.py --build
+optional spiral cleanup. The image must already contain a built DREAMPlace
+under /DREAMPlace/install — build it manually inside `external/DREAMPlace`
+before invoking the adapter.
 """
 
 from __future__ import annotations
@@ -47,13 +48,19 @@ CONTAINER_PYDEPS = f"{CONTAINER_INSTALL}/python_deps"
 BUILD_MARKER_REL = "install/dreamplace/Placer.py"
 PYDEPS_MARKER_REL = "install/python_deps/ncg_optimizer/__init__.py"
 
-# --no-deps so pip doesn't pull torch 2.x and shadow the container's torch
-# 1.7.1 (against which DREAMPlace's C++ extensions are linked).
+# --no-deps so pip doesn't pull a torch wheel as a transitive dep and
+# shadow the container's torch (1.7.1 in limbo018/dreamplace:cuda; 2.0.1+cu118
+# in bowrango/dreamplace:cuda118) — DREAMPlace's C++ extensions are linked
+# against that exact build.
 PYDEPS_PACKAGES = (
     "torch_optimizer==0.3.0",
     "pytorch_ranger",
     "ncg_optimizer==0.2.2",
 )
+
+# Images that bake PYDEPS_PACKAGES into site-packages at build time, so the
+# bind-mounted python_deps install can be skipped.
+PYDEPS_BAKED_IN_IMAGES = frozenset({"bowrango/dreamplace:cuda118"})
 
 
 def _load_sibling(name: str):
@@ -368,13 +375,20 @@ class DreamPlaceAdapter:
         if marker.exists():
             return
         raise RuntimeError(
-            f"DREAMPlace not built (missing {marker}). Run: "
-            "uv run python submissions/bowrango/dreamplace_adapter.py --build"
+            f"DREAMPlace not built (missing {marker}). From "
+            f"external/DREAMPlace (wipe build/ install/ first if you've "
+            f"previously built against another image):\n"
+            f"  docker run --rm -v <pwd>:{CONTAINER_DREAMPLACE} "
+            f"-w {CONTAINER_DREAMPLACE} {self.config.image} "
+            f"bash build_cuda118.sh"
         )
 
     def _ensure_python_deps(self) -> None:
         """Idempotent install of pure-Python runtime deps into the
-        bind-mounted install dir."""
+        bind-mounted install dir. Skipped on images that already have
+        them in site-packages."""
+        if self.config.image in PYDEPS_BAKED_IN_IMAGES:
+            return
         marker = self.config.dreamplace_src / PYDEPS_MARKER_REL
         if marker.exists():
             return
@@ -393,64 +407,6 @@ class DreamPlaceAdapter:
         proc = subprocess.run(cmd, timeout=300)
         if proc.returncode != 0 or not marker.exists():
             raise RuntimeError(f"pip install failed (exit {proc.returncode})")
-
-    @staticmethod
-    def build(
-        image: str = DEFAULT_IMAGE,
-        platform: str = DEFAULT_PLATFORM,
-        dreamplace_src: Path = DREAMPLACE_SRC,
-        build_timeout: int = 7200,
-        force: bool = False,
-        jobs: int = 2,
-    ) -> None:
-        """Build DREAMPlace inside the container. First run only.
-
-        Caps `make -jN` at 2 by default — each cc1plus instance with -flto
-        and the full PyTorch headers can hit 3-4 GB."""
-        _ensure_default_logging()
-        if shutil.which("docker") is None:
-            raise RuntimeError("`docker` not on PATH.")
-        if not dreamplace_src.exists():
-            raise RuntimeError(
-                f"DREAMPlace source missing at {dreamplace_src}. Run: "
-                "git submodule update --init --recursive external/DREAMPlace"
-            )
-
-        marker = dreamplace_src / BUILD_MARKER_REL
-        if marker.exists() and not force:
-            logger.info("already built (%s); pass --force-rebuild to rebuild",
-                        marker.parent.parent)
-            return
-
-        build_script = (
-            f"set -euo pipefail && cd {CONTAINER_DREAMPLACE} && "
-            f"mkdir -p build install && cd build && "
-            f"cmake .. -DCMAKE_INSTALL_PREFIX={CONTAINER_INSTALL} "
-            f"-DPython_EXECUTABLE=$(which python3) && "
-            f"make -j{jobs} && make install"
-        )
-        cmd = [
-            "docker", "run", "--rm",
-            "--platform", platform,
-            *_user_args(),
-            "-v", f"{dreamplace_src}:{CONTAINER_DREAMPLACE}",
-            "-w", CONTAINER_DREAMPLACE,
-            image,
-            "bash", "-c", build_script,
-        ]
-
-        logger.info("building DREAMPlace (first run only)")
-        logger.info("%s", " ".join(cmd))
-        sys.stderr.flush()
-
-        t0 = time.time()
-        proc = subprocess.run(cmd, timeout=build_timeout)
-        if proc.returncode != 0:
-            raise RuntimeError(f"build failed (exit {proc.returncode})")
-        if not marker.exists():
-            raise RuntimeError(f"build succeeded but {marker} is missing")
-        logger.info("build complete in %.0fs", time.time() - t0)
-
 
 def _config_defaults() -> dict:
     """All `DreamPlaceConfig` field defaults, sourced via introspection.
@@ -503,13 +459,6 @@ def main() -> None:
         return v
 
     parser = argparse.ArgumentParser(description="DREAMPlace via Docker")
-
-    # Build sub-command and CLI-only options.
-    parser.add_argument("--build", action="store_true",
-                        help="Build DREAMPlace inside the container and exit.")
-    parser.add_argument("--force-rebuild", action="store_true")
-    parser.add_argument("--jobs", "-j", type=int, default=2,
-                        help="With --build, parallel make jobs.")
     parser.add_argument("--benchmark", "-b", default="ibm01")
 
     # DreamPlaceConfig-bound options. All defaults come from cfg[...] so
@@ -562,15 +511,6 @@ def main() -> None:
 
     args = parser.parse_args()
     _ensure_default_logging()
-
-    if args.build:
-        DreamPlaceAdapter.build(
-            image=args.image,
-            platform=args.platform,
-            force=args.force_rebuild,
-            jobs=args.jobs,
-        )
-        return
 
     config = DreamPlaceConfig(
         image=args.image,
