@@ -309,6 +309,7 @@ def write_dreamplace_config(
     stop_overflow: float = 0.005,
     plot: bool = False,
     num_bins: int = 256,
+    density_weight: float = 8e-5,
 ) -> None:
     """Write a DREAMPlace JSON config. Paths are container-side."""
     nb = num_bins
@@ -329,7 +330,7 @@ def write_dreamplace_config(
             "Lsub_iteration": 1,
         }],
         "target_density": target_density,
-        "density_weight": 8e-5,
+        "density_weight": density_weight,
         "gamma": 4.0,
         "random_seed": 1000,
         "scale_factor": 1.0,
