@@ -2,10 +2,11 @@
 In-container shim. Patches `BasicPlace.build_legalization` to skip
 DREAMPlace's greedy standard-cell legalizer (which, in the absence of real
 std cells, re-shuffles already-legal macros and returns illegal positions),
-then forwards to `dreamplace/Placer.py` via `runpy`.
+hot-loads the editable `LevyPlacer.py` experiment, then forwards to
+`dreamplace/Placer.py` via `runpy`.
 
-The bare `import BasicPlace` is intentional: `NonLinearPlace.py` does the
-same, and `import dreamplace.BasicPlace` would patch a different
+The bare `import BasicPlace` is intentional: DREAMPlace's top-level modules do
+the same, and `import dreamplace.BasicPlace` would patch a different
 `sys.modules` entry than the one the flow uses.
 """
 
@@ -61,7 +62,7 @@ def _build_legalization_macro_only(self, params, placedb, data_collections, devi
 BasicPlace_mod.BasicPlace.build_legalization = _build_legalization_macro_only
 
 
-def _load_source_override(module_name):
+def _load_source_override(module_name, source_name=None):
     """Load an editable DREAMPlace Python module without reinstalling.
 
     DREAMPlace's compiled ops live under /dreamplace/install and are tied to
@@ -70,7 +71,8 @@ def _load_source_override(module_name):
     do not contain the built extensions.  Instead, override only the top-level
     Python module we are actively experimenting with.
     """
-    path = os.path.join(SOURCE_DREAMPLACE_DIR, f"{module_name}.py")
+    source_name = source_name or module_name
+    path = os.path.join(SOURCE_DREAMPLACE_DIR, f"{source_name}.py")
     if not os.path.exists(path):
         return
 
@@ -84,7 +86,8 @@ def _load_source_override(module_name):
     logging.info("Loaded editable DREAMPlace override: %s", path)
 
 
-_load_source_override("NonLinearPlace")
+_load_source_override("NonLinearPlace", source_name="LevyPlacer")
+logging.info("Set DREAMPlace engine to LevyPlacer")
 
 import runpy  # noqa: E402
 

@@ -29,7 +29,7 @@ A two-stage macro placer:
 |---|---|
 | `dreamplace_adapter.py` | `DreamPlaceAdapter` placer + CLI. The evaluator imports this. Builds the docker invocation, bind-mounts the work dir / DREAMPlace tree / this directory into the container, and reads the `.pl` back. |
 | `dreamplace_io.py` | `Benchmark` ↔ UCLA Bookshelf (`.aux`/`.nodes`/`.nets`/`.pl`/`.scl`/`.wts`) and the JSON config that drives `dreamplace/Placer.py`. Pin offsets come from `plc.modules_w_pins`; coordinates scale µm by `SCALE = 10_000`. |
-| `dreamplace_runner.py` | In-container shim. Monkey-patches `BasicPlace.build_legalization` to skip DREAMPlace's greedy std-cell legalizer (which re-shuffles already-legal macros when there are no real std cells), hot-loads editable `external/DREAMPlace/dreamplace/NonLinearPlace.py`, then forwards to installed `dreamplace/Placer.py` via `runpy`. |
+| `dreamplace_runner.py` | In-container shim. Monkey-patches `BasicPlace.build_legalization` to skip DREAMPlace's greedy std-cell legalizer (which re-shuffles already-legal macros when there are no real std cells), hot-loads editable `external/DREAMPlace/dreamplace/LevyPlacer.py`, then forwards to installed `dreamplace/Placer.py` via `runpy`. |
 | `placer.py` | Spiral search (used as cleanup). |
 | `make_mp4.py` | Stitch DREAMPlace plot PNGs into an MP4. |
 
@@ -38,12 +38,13 @@ the legalizer patch doesn't require a rebuild — the adapter bind-mounts
 this directory at `/adapter` inside the container and invokes
 `python3 /adapter/dreamplace_runner.py <config.json>`.
 
-`NonLinearPlace.py` is also loaded from the bind-mounted DREAMPlace source
-tree by default (`/dreamplace/dreamplace`, override with
-`DREAMPLACE_SOURCE_DIR`).  The installed tree is still used for compiled
-ops and the rest of DREAMPlace, so Python-only edits to
-`external/DREAMPlace/dreamplace/NonLinearPlace.py` take effect on the next
-run without rebuilding or reinstalling DREAMPlace.
+`LevyPlacer.py` is loaded from the bind-mounted DREAMPlace source tree
+(`/dreamplace/dreamplace`, override with `DREAMPLACE_SOURCE_DIR`). The
+installed tree is still used for compiled ops and the rest of DREAMPlace, so
+Python-only edits to `external/DREAMPlace/dreamplace/LevyPlacer.py` take
+effect on the next run without rebuilding or reinstalling DREAMPlace. Keep
+the Levy tuning constants in `LevyPlacer.py`; the adapter does not pass them
+through as environment options.
 
 ## Dependency
 
