@@ -3,37 +3,97 @@
 A two-stage macro placer:
 
 1. **DREAMPlace** (Lin et al., DAC '19) runs as a black-box solver inside
-   the upstream `limbo018/dreamplace:cuda` Docker image. The `Benchmark`
-   is converted to UCLA Bookshelf, DREAMPlace does Nesterov global
-   placement plus its built-in macro legalizer, and the resulting `.pl`
-   is read back as a tensor of macro centers.
-2. **Spiral cleanup** runs a minimum-displacement spiral search over
-   hard macros to clear residual overlaps from DREAMPlace's legalizer.
+   a Docker image. The `Benchmark` is converted to UCLA Bookshelf,
+   DREAMPlace does Nesterov global placement plus its built-in macro
+   legalizer, and the resulting `.pl` is read back as a tensor of macro
+   centers.
+2. **Spiral cleanup** runs a minimum-displacement spiral search over hard
+   macros to clear residual overlaps left by DREAMPlace's legalizer.
    Already-legal macros keep their position via a fast-path; only
    overlapping ones move. On by default; pass `--no-spiral-cleanup` to
    disable.
+
+- [Files](#files)
+- [Dependency](#dependency)
+- [How to Build](#how-to-build)
+  - [Build with Docker (CPU, macOS / Linux)](#build-with-docker-cpu-macos--linux)
+  - [Build with Docker (GPU, Linux / Windows)](#build-with-docker-gpu-linux--windows)
+- [How to Run](#how-to-run)
+- [Configurations](#configurations)
+- [Visualization](#visualization)
+- [Troubleshooting](#troubleshooting)
 
 ## Files
 
 | File | Role |
 |---|---|
-| `dreamplace_adapter.py` | `DreamPlaceAdapter` placer + CLI |
-| `dreamplace_io.py` | Bookshelf write/read and DREAMPlace JSON config |
-| `dreamplace_runner.py` | In-container shim that swaps DREAMPlace's legalizer for a macro-only one |
-| `placer.py` | Spiral search (used standalone or as cleanup) |
-| `make_mp4.py` | Stitch DREAMPlace plot PNGs into an MP4 |
+| `dreamplace_adapter.py` | `DreamPlaceAdapter` placer + CLI. The evaluator imports this. Builds the docker invocation, bind-mounts the work dir / DREAMPlace tree / this directory into the container, and reads the `.pl` back. |
+| `dreamplace_io.py` | `Benchmark` ↔ UCLA Bookshelf (`.aux`/`.nodes`/`.nets`/`.pl`/`.scl`/`.wts`) and the JSON config that drives `dreamplace/Placer.py`. Pin offsets come from `plc.modules_w_pins`; coordinates scale µm by `SCALE = 10_000`. |
+| `dreamplace_runner.py` | In-container shim. Monkey-patches `BasicPlace.build_legalization` to skip DREAMPlace's greedy std-cell legalizer (which re-shuffles already-legal macros when there are no real std cells), then forwards to `dreamplace/Placer.py` via `runpy`. |
+| `placer.py` | Spiral search (used as cleanup). |
+| `make_mp4.py` | Stitch DREAMPlace plot PNGs into an MP4. |
 
-## One-time setup
+The runner ships next to the adapter, not in the image, so iterating on
+the legalizer patch doesn't require a rebuild — the adapter bind-mounts
+this directory at `/adapter` inside the container and invokes
+`python3 /adapter/dreamplace_runner.py <config.json>`.
+
+## Dependency
+
+- [Docker](https://docs.docker.com/get-docker/) — Desktop on macOS /
+  Windows, daemon on Linux.
+- [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html)
+  — only for `--gpu 1`. Required at *build* time of the CUDA image too,
+  not just runtime: `cmake/TorchExtension.cmake` calls
+  `torch.cuda.is_available()` at configure time, and skips CUDA kernels
+  if no GPU is attached.
+- The `external/DREAMPlace` git submodule:
+  ```
+  git submodule update --init --recursive external/DREAMPlace
+  ```
+
+## How to Build
+
+### Build with Docker (CPU, macOS / Linux)
+
+Pull the upstream image and build DREAMPlace into `external/DREAMPlace/install/`.
 
 ```bash
 docker pull --platform linux/amd64 limbo018/dreamplace:cuda
-git submodule update --init --recursive external/DREAMPlace
-uv run python submissions/bowrango/dreamplace_adapter.py --build
+
+cd external/DREAMPlace
+docker run --rm \
+  -v $(pwd):/DREAMPlace \
+  -w /DREAMPlace \
+  limbo018/dreamplace:cuda \
+  bash -c "mkdir -p build install && cd build && \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/DREAMPlace/install \
+             -DPython_EXECUTABLE=\$(which python) && \
+    make -j2 && make install"
 ```
 
-The base image only ships build dependencies — DREAMPlace itself compiles
-from the submodule into `external/DREAMPlace/install/`. To force a
-rebuild, pass `--force-rebuild`.
+The adapter selects this image automatically on macOS.
+
+### Build with Docker (GPU, Linux / Windows)
+
+The upstream image targets older CUDA + sm_60. RTX 30/A-series cards
+(sm_86, Ampere) need CUDA 11+. `Dockerfile.cuda118` provides a CUDA 11.8
++ PyTorch 2.0.1+cu118 base; `build_cuda118.sh` builds DREAMPlace inside
+it for sm_86.
+
+```bash
+cd external/DREAMPlace
+
+# 1. Build the CUDA 11.8 base image once.
+docker build -f Dockerfile.cuda118 -t bowrango/dreamplace:cuda118 .
+
+# 2. Build DREAMPlace inside it. --gpus all is REQUIRED
+docker run --rm --gpus all \
+  -v $(pwd):/DREAMPlace \
+  -w /DREAMPlace \
+  bowrango/dreamplace:cuda118 \
+  bash build_cuda118.sh
+```
 
 ## Run
 
@@ -43,31 +103,35 @@ uv run evaluate submissions/bowrango/dreamplace_adapter.py -b ibm01
 
 # Direct CLI.
 uv run python submissions/bowrango/dreamplace_adapter.py -b ibm01
+
+# GPU (after building with Dockerfile.cuda118).
+uv run python submissions/bowrango/dreamplace_adapter.py -b ibm01 --gpu 1
 ```
 
-Per-benchmark Bookshelf files and DREAMPlace outputs land under
-`dreamplace_work/<benchmark>/`. Pass `keep_work=False` to
-`DreamPlaceConfig` to clean up after each run.
+Bookshelf files and DREAMPlace outputs land under
+`dreamplace_work/<benchmark>/`. Pass `--no-keep-work` (or
+`keep_work=False` to `DreamPlaceConfig`) to clean up after each run.
 
-### Tunables
+## Configurations
 
 | Flag | Default | Effect |
 |---|---|---|
-| `--auto-tune` / `--no-auto-tune` | on | Pick `target_density`/`stop_overflow`/`iterations` from canvas size at runtime. Small canvases (< 1000 µm²) get safer values to avoid gradient instability; larger benchmarks get the aggressive ibm10-tuned values. Disable to honor explicit flags below. |
-| `--target-density` | `0.80` | DREAMPlace bin-occupancy ceiling (used when `--no-auto-tune`). Lower spreads more. |
-| `--stop-overflow` | `0.005` | Global-placement convergence threshold (used when `--no-auto-tune`). Tighter forces more iterations of spreading. |
-| `--iterations` | `3000` | Global-placement iteration cap (used when `--no-auto-tune`). |
+| `--target-density` | `0.80` | DREAMPlace bin-occupancy ceiling, in (0, 1]. Lower spreads more. |
+| `--stop-overflow` | `0.005` | Global-placement convergence threshold. Tighter forces more iterations of spreading. |
+| `--iterations` | `1000` | Global-placement iteration cap. |
+| `--density-weight` | `4e-5` | Scales the spreading force vs wirelength force at iteration 0 (sets λ_0). Pass `auto` to scale by `utilization × cell density`. |
 | `--num-bins` | `256` | Density-grid resolution per axis. |
 | `--legalize` / `--no-legalize` | on | Run DREAMPlace's macro legalizer. |
-| `--spiral-cleanup` / `--no-spiral-cleanup` | on | Run min-displacement spiral pass over hard macros after DREAMPlace. |
+| `--spiral-cleanup` / `--no-spiral-cleanup` | on | Run min-displacement spiral search over hard macros after DREAMPlace. |
 | `--detailed` | off | Run DREAMPlace's ABCDPlace detailed placement after legalization. |
 | `--fillers` | off | Filler-cell padding to reach `target_density`. |
-| `--gpu` | `0` | `0` = CPU, `1` = GPU (requires NVIDIA Container Toolkit). |
+| `--gpu` | `0` | `0` = CPU, `1` = GPU. |
+| `--image` | OS-dependent | `limbo018/dreamplace:cuda` on macOS, `bowrango/dreamplace:cuda118` on Windows. |
 
 ## Visualization
 
 ```bash
-# Generate per-iteration PNGs from inside the container.
+# Per-iteration PNGs from inside the container.
 uv run python submissions/bowrango/dreamplace_adapter.py -b ibm01 \
     --plot --plot-every 1
 
@@ -76,12 +140,5 @@ uv run python submissions/bowrango/make_mp4.py -b ibm01
 ```
 
 PNGs land at `dreamplace_work/<bench>/<bench>/plot/iter*.png`. The MP4
-output drops next to that directory as `animation.mp4` by default.
-Requires `ffmpeg` on PATH.
-
-## Platform notes
-
-- **macOS / Linux**: works as-is.
-- **Windows**: works on Docker Desktop with the WSL2 backend. NVIDIA
-  Container Toolkit is required for `--gpu 1`. The adapter detects the
-  platform and skips POSIX-only flags automatically.
+drops next to that directory as `animation.mp4`. Requires `ffmpeg` on
+PATH.
