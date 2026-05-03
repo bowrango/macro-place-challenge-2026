@@ -27,14 +27,55 @@ import torch
 from macro_place.benchmark import Benchmark
 
 
-REPO_ROOT = Path(__file__).resolve().parents[2]
-WORK_ROOT = Path(__file__).resolve().parent / "dreamplace_work"
-DREAMPLACE_SRC = REPO_ROOT / "external/DREAMPlace"
+ADAPTER_DIR = Path(__file__).resolve().parent
+
+
+def _find_repo_root() -> Path:
+    """Find the challenge root in normal checkouts and eval Docker.
+
+    In local development this file lives under submissions/bowrango.  The
+    eval Docker harness mounts only that directory at /submission while the
+    challenge package itself lives at /challenge, which is also the cwd.
+    """
+    for candidate in [ADAPTER_DIR, *ADAPTER_DIR.parents, Path.cwd()]:
+        if (candidate / "macro_place").exists():
+            return candidate
+    return Path.cwd()
+
+
+REPO_ROOT = _find_repo_root()
+WORK_ROOT = Path(
+    os.environ.get("DREAMPLACE_WORK_ROOT", str(REPO_ROOT / "dreamplace_work"))
+)
+
+
+def _find_dreamplace_src() -> Path:
+    override = os.environ.get("DREAMPLACE_SRC")
+    if override:
+        return Path(override)
+
+    candidates = (
+        REPO_ROOT / "external/DREAMPlace",
+        ADAPTER_DIR / "DREAMPlace",
+        Path.cwd() / "external/DREAMPlace",
+        Path("/DREAMPlace"),
+    )
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    return candidates[0]
+
+
+DREAMPLACE_SRC = _find_dreamplace_src()
 
 def _default_image() -> str:
-    """limbo018 base on Mac (CPU prototyping); local CUDA 11.8 build on
-    Windows (RTX A4000 is sm_86, needs CUDA 11+). Override via --image."""
-    return "bowrango/dreamplace:cuda118" if os.name == "nt" else "limbo018/dreamplace:cuda"
+    """limbo018 base on macOS CPU prototyping; CUDA 11.8 elsewhere.
+    Override via --image."""
+    return (
+        "limbo018/dreamplace:cuda"
+        if sys.platform == "darwin"
+        else "bowrango/dreamplace:cuda118"
+    )
 
 
 DEFAULT_IMAGE = _default_image()
@@ -380,7 +421,7 @@ class DreamPlaceAdapter:
             f"previously built against another image):\n"
             f"  docker run --rm -v <pwd>:{CONTAINER_DREAMPLACE} "
             f"-w {CONTAINER_DREAMPLACE} {self.config.image} "
-            f"bash build_cuda118.sh"
+            f"bash build.sh"
         )
 
     def _ensure_python_deps(self) -> None:

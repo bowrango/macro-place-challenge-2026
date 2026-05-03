@@ -15,13 +15,24 @@ Requires ffmpeg on PATH (`brew install ffmpeg` on macOS).
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
 
-WORK_ROOT = Path(__file__).resolve().parent / "dreamplace_work"
+def _find_repo_root() -> Path:
+    script_dir = Path(__file__).resolve().parent
+    for candidate in [script_dir, *script_dir.parents, Path.cwd()]:
+        if (candidate / "macro_place").exists():
+            return candidate
+    return Path.cwd()
+
+
+WORK_ROOT = Path(
+    os.environ.get("DREAMPLACE_WORK_ROOT", str(_find_repo_root() / "dreamplace_work"))
+)
 
 
 def _plot_dir_for(benchmark: str) -> Path:

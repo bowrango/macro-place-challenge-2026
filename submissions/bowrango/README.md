@@ -16,7 +16,7 @@ A two-stage macro placer:
 - [Files](#files)
 - [Dependency](#dependency)
 - [How to Build](#how-to-build)
-  - [Build with Docker (CPU, macOS / Linux)](#build-with-docker-cpu-macos--linux)
+  - [Build with Docker (CPU, macOS)](#build-with-docker-cpu-macos)
   - [Build with Docker (GPU, Linux / Windows)](#build-with-docker-gpu-linux--windows)
 - [How to Run](#how-to-run)
 - [Configurations](#configurations)
@@ -29,7 +29,7 @@ A two-stage macro placer:
 |---|---|
 | `dreamplace_adapter.py` | `DreamPlaceAdapter` placer + CLI. The evaluator imports this. Builds the docker invocation, bind-mounts the work dir / DREAMPlace tree / this directory into the container, and reads the `.pl` back. |
 | `dreamplace_io.py` | `Benchmark` ↔ UCLA Bookshelf (`.aux`/`.nodes`/`.nets`/`.pl`/`.scl`/`.wts`) and the JSON config that drives `dreamplace/Placer.py`. Pin offsets come from `plc.modules_w_pins`; coordinates scale µm by `SCALE = 10_000`. |
-| `dreamplace_runner.py` | In-container shim. Monkey-patches `BasicPlace.build_legalization` to skip DREAMPlace's greedy std-cell legalizer (which re-shuffles already-legal macros when there are no real std cells), then forwards to `dreamplace/Placer.py` via `runpy`. |
+| `dreamplace_runner.py` | In-container shim. Monkey-patches `BasicPlace.build_legalization` to skip DREAMPlace's greedy std-cell legalizer (which re-shuffles already-legal macros when there are no real std cells), hot-loads editable `external/DREAMPlace/dreamplace/NonLinearPlace.py`, then forwards to installed `dreamplace/Placer.py` via `runpy`. |
 | `placer.py` | Spiral search (used as cleanup). |
 | `make_mp4.py` | Stitch DREAMPlace plot PNGs into an MP4. |
 
@@ -37,6 +37,13 @@ The runner ships next to the adapter, not in the image, so iterating on
 the legalizer patch doesn't require a rebuild — the adapter bind-mounts
 this directory at `/adapter` inside the container and invokes
 `python3 /adapter/dreamplace_runner.py <config.json>`.
+
+`NonLinearPlace.py` is also loaded from the bind-mounted DREAMPlace source
+tree by default (`/DREAMPlace/dreamplace`, override with
+`DREAMPLACE_SOURCE_DIR`).  The installed tree is still used for compiled
+ops and the rest of DREAMPlace, so Python-only edits to
+`external/DREAMPlace/dreamplace/NonLinearPlace.py` take effect on the next
+run without rebuilding or reinstalling DREAMPlace.
 
 ## Dependency
 
@@ -54,7 +61,7 @@ this directory at `/adapter` inside the container and invokes
 
 ## How to Build
 
-### Build with Docker (CPU, macOS / Linux)
+### Build with Docker (CPU, macOS)
 
 Pull the upstream image and build DREAMPlace into `external/DREAMPlace/install/`.
 
@@ -72,27 +79,37 @@ docker run --rm \
     make -j2 && make install"
 ```
 
-The adapter selects this image automatically on macOS.
+The adapter selects this image automatically on macOS for CPU prototyping.
 
 ### Build with Docker (GPU, Linux / Windows)
 
 The upstream image targets older CUDA + sm_60. RTX 30/A-series cards
-(sm_86, Ampere) need CUDA 11+. `Dockerfile.cuda118` provides a CUDA 11.8
-+ PyTorch 2.0.1+cu118 base; `build_cuda118.sh` builds DREAMPlace inside
-it for sm_86.
+(sm_86, Ampere) and Ada cards need a newer CUDA toolchain.
+`external/DREAMPlace/Dockerfile` provides a CUDA 11.8 + PyTorch 2.0.1+cu118 base;
+`build.sh` builds DREAMPlace inside it.  By default the script
+lets DREAMPlace's CMake choose CUDA architectures; set
+`DREAMPLACE_CUDA_ARCHITECTURES` if you want to force a specific list.
 
 ```bash
 cd external/DREAMPlace
 
 # 1. Build the CUDA 11.8 base image once.
-docker build -f Dockerfile.cuda118 -t bowrango/dreamplace:cuda118 .
+docker build -t bowrango/dreamplace:cuda118 .
 
 # 2. Build DREAMPlace inside it. --gpus all is REQUIRED
 docker run --rm --gpus all \
   -v $(pwd):/DREAMPlace \
   -w /DREAMPlace \
   bowrango/dreamplace:cuda118 \
-  bash build_cuda118.sh
+  bash build.sh
+
+# Optional: force both local A4000/Ampere and eval Ada targets.
+docker run --rm --gpus all \
+  -e DREAMPLACE_CUDA_ARCHITECTURES='8.6;8.9' \
+  -v $(pwd):/DREAMPlace \
+  -w /DREAMPlace \
+  bowrango/dreamplace:cuda118 \
+  bash build.sh
 ```
 
 ## Run
@@ -104,7 +121,7 @@ uv run evaluate submissions/bowrango/dreamplace_adapter.py -b ibm01
 # Direct CLI.
 uv run python submissions/bowrango/dreamplace_adapter.py -b ibm01
 
-# GPU (after building with Dockerfile.cuda118).
+# GPU (after building the DREAMPlace Dockerfile).
 uv run python submissions/bowrango/dreamplace_adapter.py -b ibm01 --gpu 1
 ```
 
@@ -126,7 +143,7 @@ Bookshelf files and DREAMPlace outputs land under
 | `--detailed` | off | Run DREAMPlace's ABCDPlace detailed placement after legalization. |
 | `--fillers` | off | Filler-cell padding to reach `target_density`. |
 | `--gpu` | `0` | `0` = CPU, `1` = GPU. |
-| `--image` | OS-dependent | `limbo018/dreamplace:cuda` on macOS, `bowrango/dreamplace:cuda118` on Windows. |
+| `--image` | OS-dependent | `limbo018/dreamplace:cuda` on macOS, `bowrango/dreamplace:cuda118` elsewhere. |
 
 ## Visualization
 

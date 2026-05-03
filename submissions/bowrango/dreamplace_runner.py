@@ -9,12 +9,21 @@ same, and `import dreamplace.BasicPlace` would patch a different
 `sys.modules` entry than the one the flow uses.
 """
 
+import importlib.util
 import logging
 import os
 import sys
 
 PLACER_PATH = "/DREAMPlace/install/dreamplace/Placer.py"
-sys.path.insert(0, os.path.dirname(PLACER_PATH))
+INSTALL_DREAMPLACE_DIR = os.path.dirname(PLACER_PATH)
+SOURCE_DREAMPLACE_DIR = os.environ.get(
+    "DREAMPLACE_SOURCE_DIR", "/DREAMPlace/dreamplace"
+)
+
+# Bare imports such as `import BasicPlace` should resolve to the installed
+# Python package that matches the compiled ops.  We selectively override
+# editable source files below.
+sys.path.insert(0, INSTALL_DREAMPLACE_DIR)
 
 import BasicPlace as BasicPlace_mod  # noqa: E402
 import dreamplace.ops.macro_legalize.macro_legalize as macro_legalize  # noqa: E402
@@ -50,6 +59,32 @@ def _build_legalization_macro_only(self, params, placedb, data_collections, devi
 
 
 BasicPlace_mod.BasicPlace.build_legalization = _build_legalization_macro_only
+
+
+def _load_source_override(module_name):
+    """Load an editable DREAMPlace Python module without reinstalling.
+
+    DREAMPlace's compiled ops live under /DREAMPlace/install and are tied to
+    the container's torch build.  Putting the source tree ahead of install on
+    PYTHONPATH would make `dreamplace.ops.*` resolve to source directories that
+    do not contain the built extensions.  Instead, override only the top-level
+    Python module we are actively experimenting with.
+    """
+    path = os.path.join(SOURCE_DREAMPLACE_DIR, f"{module_name}.py")
+    if not os.path.exists(path):
+        return
+
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"could not load DREAMPlace override {path}")
+
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    logging.info("Loaded editable DREAMPlace override: %s", path)
+
+
+_load_source_override("NonLinearPlace")
 
 import runpy  # noqa: E402
 
