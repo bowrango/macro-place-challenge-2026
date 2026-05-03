@@ -39,7 +39,7 @@ this directory at `/adapter` inside the container and invokes
 `python3 /adapter/dreamplace_runner.py <config.json>`.
 
 `NonLinearPlace.py` is also loaded from the bind-mounted DREAMPlace source
-tree by default (`/DREAMPlace/dreamplace`, override with
+tree by default (`/dreamplace/dreamplace`, override with
 `DREAMPLACE_SOURCE_DIR`).  The installed tree is still used for compiled
 ops and the rest of DREAMPlace, so Python-only edits to
 `external/DREAMPlace/dreamplace/NonLinearPlace.py` take effect on the next
@@ -70,11 +70,11 @@ docker pull --platform linux/amd64 limbo018/dreamplace:cuda
 
 cd external/DREAMPlace
 docker run --rm \
-  -v $(pwd):/DREAMPlace \
-  -w /DREAMPlace \
+  -v $(pwd):/dreamplace \
+  -w /dreamplace \
   limbo018/dreamplace:cuda \
   bash -c "mkdir -p build install && cd build && \
-    cmake .. -DCMAKE_INSTALL_PREFIX=/DREAMPlace/install \
+    cmake .. -DCMAKE_INSTALL_PREFIX=/dreamplace/install \
              -DPython_EXECUTABLE=\$(which python) && \
     make -j2 && make install"
 ```
@@ -98,17 +98,31 @@ docker build -t bowrango/dreamplace:cuda118 .
 
 # 2. Build DREAMPlace inside it. --gpus all is REQUIRED
 docker run --rm --gpus all \
-  -v $(pwd):/DREAMPlace \
-  -w /DREAMPlace \
+  -v $(pwd):/dreamplace \
+  -w /dreamplace \
   bowrango/dreamplace:cuda118 \
   bash build.sh
 
 # Optional: force both local A4000/Ampere and eval Ada targets.
 docker run --rm --gpus all \
   -e DREAMPLACE_CUDA_ARCHITECTURES='8.6;8.9' \
-  -v $(pwd):/DREAMPlace \
-  -w /DREAMPlace \
+  -v $(pwd):/dreamplace \
+  -w /dreamplace \
   bowrango/dreamplace:cuda118 \
+  bash build.sh
+```
+
+PowerShell equivalent on Windows:
+
+```powershell
+cd external/DREAMPlace
+docker build -t bowrango/dreamplace:cuda118 .
+
+docker run --rm --gpus all `
+  -e "DREAMPLACE_CUDA_ARCHITECTURES=8.6;8.9" `
+  --mount "type=bind,source=$($PWD.Path),target=/dreamplace" `
+  -w /dreamplace `
+  bowrango/dreamplace:cuda118 `
   bash build.sh
 ```
 
