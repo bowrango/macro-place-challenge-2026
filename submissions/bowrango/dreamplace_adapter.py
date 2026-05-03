@@ -6,7 +6,7 @@ Wraps a DREAMPlace Docker image as a placer:
 
 Per-call flow: Bookshelf write → JSON config → docker run → read .pl →
 optional spiral cleanup. The image must already contain a built DREAMPlace
-under /DREAMPlace/install — build it manually inside `external/DREAMPlace`
+under /dreamplace/install — build it manually inside `external/DREAMPlace`
 before invoking the adapter.
 """
 
@@ -58,6 +58,7 @@ def _find_dreamplace_src() -> Path:
         REPO_ROOT / "external/DREAMPlace",
         ADAPTER_DIR / "DREAMPlace",
         Path.cwd() / "external/DREAMPlace",
+        Path("/dreamplace"),
         Path("/DREAMPlace"),
     )
     for candidate in candidates:
@@ -82,7 +83,7 @@ DEFAULT_IMAGE = _default_image()
 DEFAULT_PLATFORM = "linux/amd64"
 
 CONTAINER_WORK = "/work"
-CONTAINER_DREAMPLACE = "/DREAMPlace"
+CONTAINER_DREAMPLACE = "/dreamplace"
 CONTAINER_INSTALL = f"{CONTAINER_DREAMPLACE}/install"
 CONTAINER_PYDEPS = f"{CONTAINER_INSTALL}/python_deps"
 

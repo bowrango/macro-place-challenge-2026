@@ -14,10 +14,10 @@ import logging
 import os
 import sys
 
-PLACER_PATH = "/DREAMPlace/install/dreamplace/Placer.py"
+PLACER_PATH = "/dreamplace/install/dreamplace/Placer.py"
 INSTALL_DREAMPLACE_DIR = os.path.dirname(PLACER_PATH)
 SOURCE_DREAMPLACE_DIR = os.environ.get(
-    "DREAMPLACE_SOURCE_DIR", "/DREAMPlace/dreamplace"
+    "DREAMPLACE_SOURCE_DIR", "/dreamplace/dreamplace"
 )
 
 # Bare imports such as `import BasicPlace` should resolve to the installed
@@ -64,7 +64,7 @@ BasicPlace_mod.BasicPlace.build_legalization = _build_legalization_macro_only
 def _load_source_override(module_name):
     """Load an editable DREAMPlace Python module without reinstalling.
 
-    DREAMPlace's compiled ops live under /DREAMPlace/install and are tied to
+    DREAMPlace's compiled ops live under /dreamplace/install and are tied to
     the container's torch build.  Putting the source tree ahead of install on
     PYTHONPATH would make `dreamplace.ops.*` resolve to source directories that
     do not contain the built extensions.  Instead, override only the top-level
