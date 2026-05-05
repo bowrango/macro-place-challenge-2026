@@ -13,6 +13,22 @@ A two-stage macro placer:
    overlapping ones move. On by default; pass `--no-spiral-cleanup` to
    disable.
 
+TODO Make the objective in PlaceObj.py match macro_place.objective.compute_proxy_cost
+TODO Adapt gridsearch.py example to optimize dreamplacer hyperparameters
+
+## Notes
+Maybe just replace the gated Gaussian noise with Levy
+Running GD without legalization blows up congestion/density and makes proxy worse
+Group refinement
+Hessian negative-eigenvalue saddle escape branch
+
+Bayesian optimization (Optuna):
+iterations
+target_density
+density_weight
+
+## Files
+
 - [Files](#files)
 - [Dependency](#dependency)
 - [How to Build](#how-to-build)
@@ -22,8 +38,6 @@ A two-stage macro placer:
 - [Configurations](#configurations)
 - [Visualization](#visualization)
 - [Troubleshooting](#troubleshooting)
-
-## Files
 
 | File | Role |
 |---|---|
