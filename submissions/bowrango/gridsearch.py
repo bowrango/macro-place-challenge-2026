@@ -43,6 +43,7 @@ from dreamplace_adapter import (  # noqa: E402
 
 
 DEFAULT_STORAGE = f"sqlite:///{HERE / 'gridsearch.db'}"
+DEFAULT_RESULTS = HERE / "gridsearch_results.json"
 ICCAD04_ROOT = REPO_ROOT / "external/MacroPlacement/Testcases/ICCAD04"
 FEATURE_KEYS = (
     "utilization",
@@ -166,8 +167,12 @@ def _aggregate(values: list[float], method: str) -> float:
     return sum(values) / len(values)
 
 
-def _make_config(params: dict[str, Any], gpu: int) -> DreamPlaceConfig:
-    return DreamPlaceConfig(gpu=gpu, **params)
+def _make_config(
+    params: dict[str, Any],
+    gpu: int,
+    run_id: Optional[str] = None,
+) -> DreamPlaceConfig:
+    return DreamPlaceConfig(gpu=gpu, keep_work=False, run_id=run_id, **params)
 
 
 def _sample_direct_params(trial: optuna.Trial, args: argparse.Namespace) -> dict[str, Any]:
@@ -310,7 +315,7 @@ def make_direct_objective(case: dict[str, Any], args: argparse.Namespace, gpu: i
     def objective(trial: optuna.Trial) -> float:
         name = case["name"]
         params = _sample_direct_params(trial, args)
-        placer = DreamPlaceAdapter(_make_config(params, gpu))
+        placer = DreamPlaceAdapter(_make_config(params, gpu, f"trial_{trial.number}"))
         start = time.time()
         placement = placer.place(case["benchmark"])
         costs = compute_proxy_cost(placement, case["benchmark"], case["plc"])
@@ -336,7 +341,7 @@ def make_feature_objective(
             benchmark = case["benchmark"]
             plc = case["plc"]
             params = _params_for_case(model, case["feature_z"], args)
-            placer = DreamPlaceAdapter(_make_config(params, gpu))
+            placer = DreamPlaceAdapter(_make_config(params, gpu, f"trial_{trial.number}"))
             start = time.time()
 
             for feature, value in case["feature_z"].items():
@@ -371,6 +376,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--study-timeout", type=int, default=None)
     parser.add_argument("--study-name", default="dreamplace_direct_proxy_search")
     parser.add_argument("--storage", default=DEFAULT_STORAGE)
+    parser.add_argument("--results", type=Path, default=DEFAULT_RESULTS)
     parser.add_argument("--seed", type=int, default=1000)
     parser.add_argument("--aggregate", choices=("mean", "geomean"), default="mean")
 
@@ -411,31 +417,42 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
-def _print_best(study: optuna.Study) -> None:
-    complete = [t for t in study.trials if t.state == TrialState.COMPLETE]
-    print(f"finished_trials={len(study.trials)} complete_trials={len(complete)}")
-    if not complete:
-        print("No completed trials.")
-        return
-
-    best = study.best_trial
-    print(f"best_trial={best.number} best_value={best.value:.6f}")
-    print("best_params=" + json.dumps(best.params, indent=2, sort_keys=True))
-    benchmark_params = {}
-    for key, value in best.user_attrs.items():
+def _benchmark_summary_from_trial(trial: optuna.trial.FrozenTrial) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    for key, value in trial.user_attrs.items():
         parts = key.split("/")
-        if len(parts) == 3 and parts[1] == "param":
-            benchmark_params.setdefault(parts[0], {})[parts[2]] = value
-    if benchmark_params:
-        print("best_benchmark_params=" + json.dumps(benchmark_params, indent=2, sort_keys=True))
+        if len(parts) == 2:
+            summary.setdefault(parts[0], {})[parts[1]] = value
+        elif len(parts) == 3 and parts[1] == "param":
+            summary.setdefault(parts[0], {}).setdefault("params", {})[parts[2]] = value
+    return summary
 
-    top = sorted(complete, key=lambda t: t.value if t.value is not None else math.inf)[:5]
-    print("top_trials=")
-    for trial in top:
-        print(
-            f"  #{trial.number} value={trial.value:.6f} "
-            f"params={json.dumps(trial.params, sort_keys=True)}"
+
+def _study_summary(study: optuna.Study) -> dict[str, Any]:
+    complete = _completed_trials(study)
+    summary: dict[str, Any] = {
+        "study_name": study.study_name,
+        "n_trials": len(study.trials),
+        "complete_trials": len(complete),
+    }
+    if complete:
+        best = study.best_trial
+        summary.update(
+            {
+                "best_trial": best.number,
+                "best_proxy_cost": best.value,
+                "best_params": best.params,
+                "best_benchmarks": _benchmark_summary_from_trial(best),
+            }
         )
+    return summary
+
+
+def _write_results(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    tmp.replace(path)
 
 
 def _make_sampler(seed: int):
@@ -521,7 +538,6 @@ def _run_direct_study(
         coarse_trials = max(1, int(math.ceil(args.n_trials * COARSE_TRIAL_FRACTION)))
         refine_trials = args.n_trials - coarse_trials
 
-    print(f"\n[{case['name']}] broad search: {coarse_trials} trial(s)")
     study.optimize(
         make_direct_objective(case, args, gpu),
         n_trials=coarse_trials,
@@ -534,7 +550,6 @@ def _run_direct_study(
         candidates = _local_candidates(best_params, args, refine_trials)
         for candidate in candidates:
             study.enqueue_trial(candidate)
-        print(f"[{case['name']}] local refinement: {refine_trials} trial(s)")
         study.optimize(
             make_direct_objective(case, args, gpu),
             n_trials=refine_trials,
@@ -542,8 +557,6 @@ def _run_direct_study(
             gc_after_trial=True,
         )
 
-    print(f"[{case['name']}] best")
-    _print_best(study)
     return study
 
 
@@ -570,53 +583,53 @@ def _run_feature_study(
     study.set_user_attr("mode", "feature_model")
     study.set_user_attr("gpu", gpu)
 
-    print(
-        "Running feature-model Optuna tuning on "
-        f"{', '.join(args.benchmarks)} with gpu={gpu}; "
-        f"feature_keys={list(feature_keys)}"
-    )
     study.optimize(
         make_feature_objective(cases, args, gpu, feature_keys),
         n_trials=args.n_trials,
         timeout=args.study_timeout,
         gc_after_trial=True,
     )
-    _print_best(study)
     return study
 
 
 def main() -> None:
     args = _parse_args()
+    optuna.logging.set_verbosity(optuna.logging.WARNING)
 
     cases = _load_cases(args.benchmarks)
     gpu = _detect_gpu()
 
-    probe = DreamPlaceAdapter(
-        _make_config(
-            {
-                "iterations": args.min_iterations,
-                "density_weight": args.min_density_weight,
-                "target_density": args.min_target_density,
-            },
-            gpu,
-        )
-    )
-    probe.validate_environment()
-
     if args.feature_model:
-        _run_feature_study(cases, args, gpu)
+        study = _run_feature_study(cases, args, gpu)
+        _write_results(
+            args.results,
+            {
+                "mode": "feature_model",
+                "benchmarks": args.benchmarks,
+                "storage": args.storage,
+                "gpu": gpu,
+                "feature_stats": cases[0]["feature_stats"],
+                "study": _study_summary(study),
+            },
+        )
+        print(f"stored gridsearch results: {args.results}")
         return
 
-    best_by_benchmark = {}
+    studies = {}
     for case in cases:
         study = _run_direct_study(case, args, gpu)
-        if _completed_trials(study):
-            best_by_benchmark[case["name"]] = {
-                "proxy_cost": study.best_value,
-                "params": study.best_trial.params,
-            }
-
-    print("\nbest_by_benchmark=" + json.dumps(best_by_benchmark, indent=2, sort_keys=True))
+        studies[case["name"]] = _study_summary(study)
+        _write_results(
+            args.results,
+            {
+                "mode": "direct",
+                "benchmarks": args.benchmarks,
+                "storage": args.storage,
+                "gpu": gpu,
+                "studies": studies,
+            },
+        )
+    print(f"stored gridsearch results: {args.results}")
 
 
 if __name__ == "__main__":

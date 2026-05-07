@@ -13,74 +13,18 @@ before invoking the adapter.
 from __future__ import annotations
 
 import importlib.util
-import logging
 import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional, Union
 
 import numpy as np
 import torch
 
 from macro_place.benchmark import Benchmark
-
-
-ADAPTER_DIR = Path(__file__).resolve().parent
-
-
-def _find_repo_root() -> Path:
-    """Find the challenge root in normal checkouts and eval Docker.
-
-    In local development this file lives under submissions/bowrango.  The
-    eval Docker harness mounts only that directory at /submission while the
-    challenge package itself lives at /challenge, which is also the cwd.
-    """
-    for candidate in [ADAPTER_DIR, *ADAPTER_DIR.parents, Path.cwd()]:
-        if (candidate / "macro_place").exists():
-            return candidate
-    return Path.cwd()
-
-
-REPO_ROOT = _find_repo_root()
-WORK_ROOT = Path(
-    os.environ.get("DREAMPLACE_WORK_ROOT", str(REPO_ROOT / "dreamplace_work"))
-)
-
-
-def _find_dreamplace_src() -> Path:
-    override = os.environ.get("DREAMPLACE_SRC")
-    if override:
-        return Path(override)
-
-    candidates = (
-        REPO_ROOT / "external/DREAMPlace",
-        ADAPTER_DIR / "DREAMPlace",
-        Path.cwd() / "external/DREAMPlace",
-        Path("/dreamplace"),
-        Path("/DREAMPlace"),
-    )
-    for candidate in candidates:
-        if candidate.exists():
-            return candidate
-    return candidates[0]
-
-
-DREAMPLACE_SRC = _find_dreamplace_src()
-
-def _default_image() -> str:
-    """limbo018 base on macOS CPU prototyping; CUDA 11.8 elsewhere.
-    Override via --image."""
-    return (
-        "limbo018/dreamplace:cuda"
-        if sys.platform == "darwin"
-        else "bowrango/dreamplace:cuda118"
-    )
-
-
-DEFAULT_IMAGE = _default_image()
-DEFAULT_PLATFORM = "linux/amd64"
 
 CONTAINER_WORK = "/work"
 CONTAINER_DREAMPLACE = "/dreamplace"
@@ -119,9 +63,18 @@ def _load_sibling(name: str):
     return mod
 
 
+_base = _load_sibling("dreamplace_base")
 _io = _load_sibling("dreamplace_io")
 _placer_mod = _load_sibling("placer")
 
+AdapterConfigBase = _base.AdapterConfigBase
+DEFAULT_IMAGE = _base.DEFAULT_IMAGE
+DEFAULT_PLATFORM = _base.DEFAULT_PLATFORM
+DREAMPLACE_SRC = _base.DREAMPLACE_SRC
+DEFAULT_WORK_ROOT = _base.DEFAULT_WORK_ROOT
+REPO_ROOT = _base.REPO_ROOT
+ensure_default_logging = _base.ensure_default_logging
+logger = _base.logger
 write_bookshelf = _io.write_bookshelf
 read_pl = _io.read_pl
 write_dreamplace_config = _io.write_dreamplace_config
@@ -144,32 +97,16 @@ def _gpu_args(gpu: int) -> list[str]:
     return ["--gpus", "all"] if gpu >= 1 else []
 
 
-logger = logging.getLogger("dreamplace_adapter")
-
-
-def _ensure_default_logging() -> None:
-    """Install a stderr handler if nothing is configured up the tree."""
-    lg = logger
-    while lg is not None:
-        if lg.handlers:
-            return
-        lg = lg.parent
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(logging.Formatter("  dreamplace: %(message)s"))
-    logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-
-
-class DreamPlaceConfig:
+class DreamPlaceConfig(AdapterConfigBase):
     """Tunables for `DreamPlaceAdapter`. Plain class instead of `@dataclass`
     because the evaluator loads us outside `sys.modules`, which Python 3.9's
     dataclass introspection requires."""
 
     __slots__ = (
-        "image", "platform", "gpu", "iterations", "target_density",
-        "density_weight", "legalize", "detailed", "enable_fillers",
+        "iterations", "target_density", "density_weight",
+        "legalize", "detailed", "enable_fillers",
         "stop_overflow", "num_bins", "spiral_cleanup",
-        "plot", "plot_every", "keep_work", "timeout", "dreamplace_src",
+        "plot", "plot_every",
     )
 
     def __init__(
@@ -180,8 +117,7 @@ class DreamPlaceConfig:
         gpu: int = 0,
         iterations: int = 1000,
         target_density: float = 0.80,
-        # density_weight: float | str = "auto",
-        density_weight: float =4e-5,
+        density_weight: Union[float, str] = 4e-5,
         legalize: bool = True,
         detailed: bool = False,
         enable_fillers: bool = False,
@@ -193,10 +129,19 @@ class DreamPlaceConfig:
         keep_work: bool = True,
         timeout: int = 1800,
         dreamplace_src: Path = DREAMPLACE_SRC,
+        work_root: Path = DEFAULT_WORK_ROOT,
+        run_id: Optional[str] = None,
     ):
-        self.image = image
-        self.platform = platform
-        self.gpu = gpu
+        super().__init__(
+            image=image,
+            platform=platform,
+            gpu=gpu,
+            keep_work=keep_work,
+            timeout=timeout,
+            dreamplace_src=dreamplace_src,
+            work_root=work_root,
+            run_id=run_id,
+        )
         self.iterations = iterations
         self.target_density = target_density
         self.density_weight = density_weight
@@ -208,12 +153,9 @@ class DreamPlaceConfig:
         self.spiral_cleanup = spiral_cleanup
         self.plot = plot
         self.plot_every = plot_every
-        self.keep_work = keep_work
-        self.timeout = timeout
-        self.dreamplace_src = dreamplace_src
 
     def __repr__(self) -> str:
-        fields = ", ".join(f"{k}={getattr(self, k)!r}" for k in self.__slots__)
+        fields = ", ".join(f"{k}={v!r}" for k, v in self.as_dict().items())
         return f"DreamPlaceConfig({fields})"
 
 
@@ -234,14 +176,14 @@ class DreamPlaceAdapter:
     checks run lazily on first `place()` — call `validate_environment()`
     explicitly to fail fast."""
 
-    def __init__(self, config: DreamPlaceConfig | None = None):
+    def __init__(self, config: Optional[DreamPlaceConfig] = None):
         self.config = config if config is not None else DreamPlaceConfig()
         self._validated = False
 
     def validate_environment(self) -> None:
         if self._validated:
             return
-        _ensure_default_logging()
+        self.config.ensure_logging()
         self._check_docker()
         self._require_built()
         self._validated = True
@@ -266,8 +208,8 @@ class DreamPlaceAdapter:
         else:
             density_weight = cfg.density_weight
 
-        WORK_ROOT.mkdir(parents=True, exist_ok=True)
-        work = WORK_ROOT / benchmark.name
+        cfg.work_root.mkdir(parents=True, exist_ok=True)
+        work = cfg.work_dir_for(benchmark.name)
         if work.exists():
             shutil.rmtree(work)
         work.mkdir(parents=True)
@@ -359,7 +301,6 @@ class DreamPlaceAdapter:
         """Invoke `dreamplace_runner.py` inside the container. Output is
         unbuffered so progress streams live and Ctrl+C propagates."""
         cfg = self.config
-        adapter_dir = Path(__file__).resolve().parent
         container_adapter = "/adapter"
         cmd = [
             "docker", "run", "--rm",
@@ -372,7 +313,7 @@ class DreamPlaceAdapter:
             "-e", f"DREAMPLACE_PLOT_EVERY={cfg.plot_every}",
             "-v", f"{work}:{CONTAINER_WORK}",
             "-v", f"{cfg.dreamplace_src}:{CONTAINER_DREAMPLACE}",
-            "-v", f"{adapter_dir}:{container_adapter}",
+            "-v", f"{cfg.adapter_dir}:{container_adapter}",
             "-w", CONTAINER_INSTALL,
             cfg.image,
             "bash", "-c",
@@ -388,7 +329,7 @@ class DreamPlaceAdapter:
             )
 
     @staticmethod
-    def _find_output_pl(work: Path, name: str) -> Path | None:
+    def _find_output_pl(work: Path, name: str) -> Optional[Path]:
         """Pick the latest stage's `.pl` available — detailed > legal > global."""
         for suffix in ("dp.pl", "lg.pl", "gp.pl"):
             for candidate in (work / name / f"{name}.{suffix}",
@@ -469,36 +410,8 @@ def main() -> None:
     cfg = _config_defaults()
     bool_optional = argparse.BooleanOptionalAction
 
-    def _positive_int(s: str) -> int:
-        v = int(s)
-        if v < 1:
-            raise argparse.ArgumentTypeError(f"must be >= 1, got {v}")
-        return v
-
     def _density_weight_arg(s: str):
-        """Accept 'auto' (cell-density-scaled) or a positive float."""
-        if s.lower() == "auto":
-            return "auto"
-        try:
-            v = float(s)
-        except ValueError:
-            raise argparse.ArgumentTypeError(
-                f"--density-weight must be 'auto' or a float, got {s!r}"
-            )
-        if v <= 0.0:
-            raise argparse.ArgumentTypeError(
-                f"--density-weight must be positive, got {v}"
-            )
-        return v
-
-    def _target_density_arg(s: str) -> float:
-        """Float in (0, 1]."""
-        v = float(s)
-        if not 0.0 < v <= 1.0:
-            raise argparse.ArgumentTypeError(
-                f"--target-density must be in (0, 1], got {v}"
-            )
-        return v
+        return "auto" if s.lower() == "auto" else float(s)
 
     parser = argparse.ArgumentParser(description="DREAMPlace via Docker")
     parser.add_argument("--benchmark", "-b", default="ibm01")
@@ -507,7 +420,7 @@ def main() -> None:
     # editing DreamPlaceConfig.__init__ is the only place to change them.
     parser.add_argument("--iterations", "-n", type=int,
                         default=cfg["iterations"])
-    parser.add_argument("--target-density", type=_target_density_arg,
+    parser.add_argument("--target-density", type=float,
                         default=cfg["target_density"],
                         help="DREAMPlace bin-occupancy ceiling, in (0, 1]. "
                              "Lower spreads more.")
@@ -540,7 +453,7 @@ def main() -> None:
                         default=cfg["plot"],
                         help="Write PNG snapshots of global placement to "
                              "dreamplace_work/<bench>/<bench>/plot/.")
-    parser.add_argument("--plot-every", type=_positive_int,
+    parser.add_argument("--plot-every", type=int,
                         default=cfg["plot_every"],
                         help="With --plot, snapshot every N global-placement iterations.")
     parser.add_argument("--keep-work", action=bool_optional,
@@ -552,7 +465,7 @@ def main() -> None:
     parser.add_argument("--gpu", type=int, default=cfg["gpu"])
 
     args = parser.parse_args()
-    _ensure_default_logging()
+    ensure_default_logging()
 
     config = DreamPlaceConfig(
         image=args.image,

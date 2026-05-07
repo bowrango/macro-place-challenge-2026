@@ -86,8 +86,8 @@ def _load_source_override(module_name, source_name=None):
     logging.info("Loaded editable DREAMPlace override: %s", path)
 
 
-_load_source_override("NonLinearPlace", source_name="LevyPlacer")
-logging.info("Set DREAMPlace engine to LevyPlacer")
+# _load_source_override("NonLinearPlace", source_name="LevyPlacer")
+# logging.info("Set DREAMPlace engine to LevyPlacer")
 
 import runpy  # noqa: E402
 
