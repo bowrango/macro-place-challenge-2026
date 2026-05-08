@@ -1,0 +1,364 @@
+{
+  "benchmarks": [
+    "ibm01",
+    "ibm02",
+    "ibm03",
+    "ibm04",
+    "ibm06",
+    "ibm07",
+    "ibm08",
+    "ibm09",
+    "ibm10",
+    "ibm11",
+    "ibm12",
+    "ibm13",
+    "ibm14",
+    "ibm15",
+    "ibm16",
+    "ibm17",
+    "ibm18"
+  ],
+  "gpu": 1,
+  "mode": "direct",
+  "search_space": {
+    "density_weight": [
+      1e-05,
+      0.0002
+    ],
+    "iterations": [
+      200,
+      3000,
+      100
+    ],
+    "target_density": [
+      0.5,
+      1.0
+    ]
+  },
+  "storage": "sqlite:///C:\\Users\\gigabug\\Desktop\\macro-placement\\macro-place-challenge-2026\\submissions\\bowrango\\bayesopt.db",
+  "studies": {
+    "ibm01": {
+      "best_costs": {
+        "congestion_cost": 1.1572596176337842,
+        "density_cost": 0.49922287464141846,
+        "overlap_count": 24,
+        "wirelength_cost": 0.06982672214508057
+      },
+      "best_params": {
+        "density_weight": 0.0001580652097990651,
+        "iterations": 2500,
+        "target_density": 0.5371341457016262
+      },
+      "best_proxy_cost": 0.8980679512023926,
+      "best_seconds": 25.984717845916748,
+      "best_trial": 16,
+      "complete_trials": 27,
+      "n_trials": 29,
+      "study_name": "dreamplace_bayesopt_ibm01"
+    },
+    "ibm02": {
+      "best_costs": {
+        "congestion_cost": 1.2054517149558628,
+        "density_cost": 1.2149933576583862,
+        "overlap_count": 223,
+        "wirelength_cost": 0.04515335336327553
+      },
+      "best_params": {
+        "density_weight": 1.0130032300579411e-05,
+        "iterations": 700,
+        "target_density": 0.9950324570148349
+      },
+      "best_proxy_cost": 1.255375862121582,
+      "best_seconds": 13.802909135818481,
+      "best_trial": 12,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm02"
+    },
+    "ibm03": {
+      "best_costs": {
+        "congestion_cost": 1.5936230708834678,
+        "density_cost": 0.5000000000000003,
+        "overlap_count": 46,
+        "wirelength_cost": 0.08597937226295471
+      },
+      "best_params": {
+        "density_weight": 1.1108970826465086e-05,
+        "iterations": 1200,
+        "target_density": 0.9275291266202039
+      },
+      "best_proxy_cost": 1.1327909231185913,
+      "best_seconds": 16.625086545944214,
+      "best_trial": 8,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm03"
+    },
+    "ibm04": {
+      "best_costs": {
+        "congestion_cost": 1.546660642281665,
+        "density_cost": 0.5033485293388367,
+        "overlap_count": 35,
+        "wirelength_cost": 0.0805167630314827
+      },
+      "best_params": {
+        "density_weight": 2.370629741524234e-05,
+        "iterations": 1600,
+        "target_density": 0.5805883323017869
+      },
+      "best_proxy_cost": 1.105521321296692,
+      "best_seconds": 21.24857473373413,
+      "best_trial": 13,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm04"
+    },
+    "ibm06": {
+      "best_costs": {
+        "congestion_cost": 2.1095158307884656,
+        "density_cost": 0.5093371868133545,
+        "overlap_count": 22,
+        "wirelength_cost": 0.07889940589666367
+      },
+      "best_params": {
+        "density_weight": 5.761283439945484e-05,
+        "iterations": 3000,
+        "target_density": 0.720483554067167
+      },
+      "best_proxy_cost": 1.3883259296417236,
+      "best_seconds": 36.96226239204407,
+      "best_trial": 16,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm06"
+    },
+    "ibm07": {
+      "best_costs": {
+        "congestion_cost": 1.7483341652378588,
+        "density_cost": 0.514167070388794,
+        "overlap_count": 89,
+        "wirelength_cost": 0.07146764546632767
+      },
+      "best_params": {
+        "density_weight": 1.3168291460935107e-05,
+        "iterations": 1200,
+        "target_density": 0.7852873694728234
+      },
+      "best_proxy_cost": 1.2027182579040527,
+      "best_seconds": 20.951196432113647,
+      "best_trial": 19,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm07"
+    },
+    "ibm08": {
+      "best_costs": {
+        "congestion_cost": 1.9214671958931782,
+        "density_cost": 0.5042223930358887,
+        "overlap_count": 51,
+        "wirelength_cost": 0.08052238821983337
+      },
+      "best_params": {
+        "density_weight": 1.4360439650185876e-05,
+        "iterations": 2600,
+        "target_density": 0.6288032531521711
+      },
+      "best_proxy_cost": 1.2933671474456787,
+      "best_seconds": 40.5394561290741,
+      "best_trial": 19,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm08"
+    },
+    "ibm09": {
+      "best_costs": {
+        "congestion_cost": 1.1933516254211691,
+        "density_cost": 0.5096966028213501,
+        "overlap_count": 79,
+        "wirelength_cost": 0.06088028475642204
+      },
+      "best_params": {
+        "density_weight": 1.72631959197037e-05,
+        "iterations": 1300,
+        "target_density": 0.87176970729607
+      },
+      "best_proxy_cost": 0.9124044179916382,
+      "best_seconds": 21.289034128189087,
+      "best_trial": 4,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm09"
+    },
+    "ibm10": {
+      "best_costs": {
+        "congestion_cost": 1.498140363167404,
+        "density_cost": 0.5393760800361633,
+        "overlap_count": 169,
+        "wirelength_cost": 0.056835923343896866
+      },
+      "best_params": {
+        "density_weight": 1.984923821306735e-05,
+        "iterations": 1900,
+        "target_density": 0.5947195689112674
+      },
+      "best_proxy_cost": 1.075594186782837,
+      "best_seconds": 49.007832288742065,
+      "best_trial": 12,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm10"
+    },
+    "ibm11": {
+      "best_costs": {
+        "congestion_cost": 1.2514120757483382,
+        "density_cost": 0.5054618716239929,
+        "overlap_count": 50,
+        "wirelength_cost": 0.06337683647871017
+      },
+      "best_params": {
+        "density_weight": 1.0727072966380809e-05,
+        "iterations": 1700,
+        "target_density": 0.6886007895613174
+      },
+      "best_proxy_cost": 0.9418138265609741,
+      "best_seconds": 28.074403762817383,
+      "best_trial": 16,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm11"
+    },
+    "ibm12": {
+      "best_costs": {
+        "congestion_cost": 1.8799155133737246,
+        "density_cost": 0.5884697437286377,
+        "overlap_count": 240,
+        "wirelength_cost": 0.06609882414340973
+      },
+      "best_params": {
+        "density_weight": 0.00013649462217900466,
+        "iterations": 1500,
+        "target_density": 0.60616634046136
+      },
+      "best_proxy_cost": 1.3002914190292358,
+      "best_seconds": 47.3784716129303,
+      "best_trial": 1,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm12"
+    },
+    "ibm13": {
+      "best_costs": {
+        "congestion_cost": 1.4987279620581735,
+        "density_cost": 0.5048352479934692,
+        "overlap_count": 100,
+        "wirelength_cost": 0.0587204284965992
+      },
+      "best_params": {
+        "density_weight": 2.594653304729954e-05,
+        "iterations": 1400,
+        "target_density": 0.6633146835501564
+      },
+      "best_proxy_cost": 1.060502052307129,
+      "best_seconds": 27.042229890823364,
+      "best_trial": 13,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm13"
+    },
+    "ibm14": {
+      "best_costs": {
+        "congestion_cost": 2.0579584831071607,
+        "density_cost": 0.47579225897789,
+        "overlap_count": 92,
+        "wirelength_cost": 0.06409291177988052
+      },
+      "best_params": {
+        "density_weight": 3.471267890282133e-05,
+        "iterations": 2900,
+        "target_density": 0.5144908296934356
+      },
+      "best_proxy_cost": 1.3309682607650757,
+      "best_seconds": 65.37675595283508,
+      "best_trial": 6,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm14"
+    },
+    "ibm15": {
+      "best_costs": {
+        "congestion_cost": 2.095642733386306,
+        "density_cost": 0.5003021359443665,
+        "overlap_count": 47,
+        "wirelength_cost": 0.06802497804164886
+      },
+      "best_params": {
+        "density_weight": 2.677763031317324e-05,
+        "iterations": 2000,
+        "target_density": 0.500746786081138
+      },
+      "best_proxy_cost": 1.3659974336624146,
+      "best_seconds": 47.45410490036011,
+      "best_trial": 12,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm15"
+    },
+    "ibm16": {
+      "best_costs": {
+        "congestion_cost": 1.868739784690408,
+        "density_cost": 0.5012668967247009,
+        "overlap_count": 62,
+        "wirelength_cost": 0.06016874313354492
+      },
+      "best_params": {
+        "density_weight": 2.6964786076913293e-05,
+        "iterations": 3000,
+        "target_density": 0.7949172611113609
+      },
+      "best_proxy_cost": 1.245172142982483,
+      "best_seconds": 75.20989179611206,
+      "best_trial": 19,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm16"
+    },
+    "ibm17": {
+      "best_costs": {
+        "congestion_cost": 2.560585004166871,
+        "density_cost": 0.4680766761302948,
+        "overlap_count": 109,
+        "wirelength_cost": 0.06631848961114883
+      },
+      "best_params": {
+        "density_weight": 0.00013649462217900466,
+        "iterations": 1500,
+        "target_density": 0.60616634046136
+      },
+      "best_proxy_cost": 1.5806493759155273,
+      "best_seconds": 84.5261116027832,
+      "best_trial": 1,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm17"
+    },
+    "ibm18": {
+      "best_costs": {
+        "congestion_cost": 2.4905448110736854,
+        "density_cost": 0.5105363130569458,
+        "overlap_count": 143,
+        "wirelength_cost": 0.06578170508146286
+      },
+      "best_params": {
+        "density_weight": 7.07151162146116e-05,
+        "iterations": 1600,
+        "target_density": 0.7768978499330326
+      },
+      "best_proxy_cost": 1.5663223266601562,
+      "best_seconds": 42.87309741973877,
+      "best_trial": 16,
+      "complete_trials": 20,
+      "n_trials": 20,
+      "study_name": "dreamplace_bayesopt_ibm18"
+    }
+  }
+}
